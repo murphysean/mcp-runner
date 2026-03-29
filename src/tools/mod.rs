@@ -1,26 +1,21 @@
-use rmcp::{
-    ErrorData as McpError,
-    model::*,
-    tool, tool_router,
-    handler::server::wrapper::Parameters,
-    service::ElicitationError,
-    Peer, RoleServer,
-};
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::{
+    handler::server::wrapper::Parameters, model::*, service::ElicitationError, tool, tool_router,
+    ErrorData as McpError, Peer, RoleServer,
+};
 use std::fs::File;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-use crate::{
-    Runner, ProcessHandle, Session,
-    StartCommandArgs, SessionIdArgs, SendInputArgs, SendSignalArgs,
-    ElicitedInput,
-};
 use crate::util::{
-    text_result, err, exit_code_from_status, read_from_position,
-    remove_session, reap_session, pipe_to_file, pty_pipe_to_file,
+    err, exit_code_from_status, pipe_to_file, pty_pipe_to_file, read_from_position, reap_session,
+    remove_session, text_result,
+};
+use crate::{
+    ElicitedInput, ProcessHandle, Runner, SendInputArgs, SendSignalArgs, Session, SessionIdArgs,
+    StartCommandArgs,
 };
 
 pub fn router() -> ToolRouter<Runner> {
@@ -51,22 +46,30 @@ impl Runner {
             File::create(path).map_err(|e| err(e.to_string()))?;
         }
 
-        let stdout_notify = self.peer.get().map(|p| {
-            (p.clone(), format!("session://{session_id}/stdout"))
-        });
-        let stderr_notify = self.peer.get().map(|p| {
-            (p.clone(), format!("session://{session_id}/stderr"))
-        });
+        let stdout_notify = self
+            .peer
+            .get()
+            .map(|p| (p.clone(), format!("session://{session_id}/stdout")));
+        let stderr_notify = self
+            .peer
+            .get()
+            .map(|p| (p.clone(), format!("session://{session_id}/stderr")));
 
         let process = if use_pty {
             let (pty, pts) = pty_process::open().map_err(|e| err(e.to_string()))?;
-            pty.resize(pty_process::Size::new(24, 80)).map_err(|e| err(e.to_string()))?;
+            pty.resize(pty_process::Size::new(24, 80))
+                .map_err(|e| err(e.to_string()))?;
             let cmd = pty_process::Command::new(&args.command);
-            let child = cmd.args(&cmd_args).spawn(pts).map_err(|e| err(e.to_string()))?;
+            let child = cmd
+                .args(&cmd_args)
+                .spawn(pts)
+                .map_err(|e| err(e.to_string()))?;
 
             let (read_pty, write_pty) = pty.into_split();
             let stdout_path_clone = stdout_path.clone();
-            tokio::spawn(async move { pty_pipe_to_file(read_pty, stdout_path_clone, stdout_notify).await });
+            tokio::spawn(async move {
+                pty_pipe_to_file(read_pty, stdout_path_clone, stdout_notify).await
+            });
 
             let pty_writer = Arc::new(tokio::sync::Mutex::new(write_pty));
             ProcessHandle::Pty { child, pty_writer }
@@ -88,7 +91,9 @@ impl Runner {
             let stderr = child.stderr.take();
 
             let stdout_path_clone = stdout_path.clone();
-            tokio::spawn(async move { pipe_to_file(stdout, stdout_path_clone, stdout_notify).await });
+            tokio::spawn(
+                async move { pipe_to_file(stdout, stdout_path_clone, stdout_notify).await },
+            );
 
             if let Some(stderr) = stderr {
                 let p = stderr_path.clone().unwrap();
@@ -121,7 +126,9 @@ impl Runner {
     ) -> Result<CallToolResult, McpError> {
         let process = {
             let mut sessions = self.sessions.lock().unwrap();
-            let session = sessions.get_mut(&args.session_id).ok_or_else(|| err("Session not found"))?;
+            let session = sessions
+                .get_mut(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
             session.process.take()
         };
 
@@ -141,9 +148,14 @@ impl Runner {
                 if let Some(session) = sessions.get_mut(&args.session_id) {
                     session.exit_code = status.code().or_else(|| {
                         #[cfg(unix)]
-                        { use std::os::unix::process::ExitStatusExt; status.signal().map(|s| 128 + s) }
+                        {
+                            use std::os::unix::process::ExitStatusExt;
+                            status.signal().map(|s| 128 + s)
+                        }
                         #[cfg(not(unix))]
-                        { None }
+                        {
+                            None
+                        }
                     });
                 }
             }
@@ -154,7 +166,9 @@ impl Runner {
         text_result("Command stopped")
     }
 
-    #[tool(description = "Delete a session and clean up its log files. Stops the process first if still running.")]
+    #[tool(
+        description = "Delete a session and clean up its log files. Stops the process first if still running."
+    )]
     async fn delete_session(
         &self,
         Parameters(args): Parameters<SessionIdArgs>,
@@ -170,14 +184,19 @@ impl Runner {
         text_result("Session deleted")
     }
 
-    #[tool(description = "Send input to a running command's stdin. Provide 'input' for text, 'bytes' for raw byte values (e.g. [1, 24] for Ctrl-A Ctrl-X), or set 'elicit: true' to prompt the user directly (for passwords/secrets - input never touches the LLM). Set 'await_response_ms' to block and collect output until idle for that many ms.")]
+    #[tool(
+        description = "Send input to a running command's stdin. Provide 'input' for text, 'bytes' for raw byte values (e.g. [1, 24] for Ctrl-A Ctrl-X), or set 'elicit: true' to prompt the user directly (for passwords/secrets - input never touches the LLM). Set 'await_response_ms' to block and collect output until idle for that many ms."
+    )]
     async fn send_input(
         &self,
         Parameters(args): Parameters<SendInputArgs>,
         peer: Peer<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let data = if args.elicit.unwrap_or(false) {
-            let msg = args.elicit_message.as_deref().unwrap_or("Enter input for process");
+            let msg = args
+                .elicit_message
+                .as_deref()
+                .unwrap_or("Enter input for process");
             match peer.elicit::<ElicitedInput>(msg).await {
                 Ok(Some(elicited)) => {
                     let mut bytes = elicited.input.into_bytes();
@@ -202,7 +221,9 @@ impl Runner {
 
         let pty_writer = {
             let mut sessions = self.sessions.lock().unwrap();
-            let session = sessions.get_mut(&args.session_id).ok_or_else(|| err("Session not found"))?;
+            let session = sessions
+                .get_mut(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
 
             match session.process {
                 Some(ProcessHandle::Pty { ref pty_writer, .. }) => Some(pty_writer.clone()),
@@ -235,8 +256,10 @@ impl Runner {
 
                 let (data, new_pos) = {
                     let sessions = self.sessions.lock().unwrap();
-                    let s = sessions.get(&args.session_id).ok_or_else(|| err("Session not found"))?;
-                    read_from_position(&s.stdout_path, s.stdout_pos).map_err(|e| err(e))?
+                    let s = sessions
+                        .get(&args.session_id)
+                        .ok_or_else(|| err("Session not found"))?;
+                    read_from_position(&s.stdout_path, s.stdout_pos).map_err(err)?
                 };
 
                 if data.is_empty() {
@@ -283,7 +306,9 @@ impl Runner {
             };
 
             let mut sessions = self.sessions.lock().unwrap();
-            let session = sessions.get_mut(&args.session_id).ok_or_else(|| err("Session not found"))?;
+            let session = sessions
+                .get_mut(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
 
             let pid = match session.process {
                 Some(ProcessHandle::Pipe(ref child)) => child.id() as i32,
@@ -310,9 +335,14 @@ impl Runner {
                         if let Ok(Some(status)) = child.try_wait() {
                             session.exit_code = status.code().or_else(|| {
                                 #[cfg(unix)]
-                                { use std::os::unix::process::ExitStatusExt; status.signal().map(|s| 128 + s) }
+                                {
+                                    use std::os::unix::process::ExitStatusExt;
+                                    status.signal().map(|s| 128 + s)
+                                }
                                 #[cfg(not(unix))]
-                                { None }
+                                {
+                                    None
+                                }
                             });
                             session.process = None;
                         }
@@ -337,21 +367,27 @@ impl Runner {
     ) -> Result<CallToolResult, McpError> {
         let (path, pos) = {
             let sessions = self.sessions.lock().unwrap();
-            let s = sessions.get(&args.session_id).ok_or_else(|| err("Session not found"))?;
+            let s = sessions
+                .get(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
             (s.stdout_path.clone(), s.stdout_pos)
         };
 
-        let (data, new_pos) = read_from_position(&path, pos).map_err(|e| err(e))?;
+        let (data, new_pos) = read_from_position(&path, pos).map_err(err)?;
 
         let exited = {
             let mut sessions = self.sessions.lock().unwrap();
-            let s = sessions.get_mut(&args.session_id).ok_or_else(|| err("Session not found"))?;
+            let s = sessions
+                .get_mut(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
             s.stdout_pos = new_pos;
             reap_session(s)
         };
 
         let mut result = data;
-        if let Some(msg) = exited { result.push_str(&format!("\n{msg}\n")); }
+        if let Some(msg) = exited {
+            result.push_str(&format!("\n{msg}\n"));
+        }
         text_result(result)
     }
 
@@ -362,22 +398,31 @@ impl Runner {
     ) -> Result<CallToolResult, McpError> {
         let (path, pos) = {
             let sessions = self.sessions.lock().unwrap();
-            let s = sessions.get(&args.session_id).ok_or_else(|| err("Session not found"))?;
-            let p = s.stderr_path.as_ref().ok_or_else(|| err("stderr not split for this session"))?;
+            let s = sessions
+                .get(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
+            let p = s
+                .stderr_path
+                .as_ref()
+                .ok_or_else(|| err("stderr not split for this session"))?;
             (p.clone(), s.stderr_pos)
         };
 
-        let (data, new_pos) = read_from_position(&path, pos).map_err(|e| err(e))?;
+        let (data, new_pos) = read_from_position(&path, pos).map_err(err)?;
 
         let exited = {
             let mut sessions = self.sessions.lock().unwrap();
-            let s = sessions.get_mut(&args.session_id).ok_or_else(|| err("Session not found"))?;
+            let s = sessions
+                .get_mut(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
             s.stderr_pos = new_pos;
             reap_session(s)
         };
 
         let mut result = data;
-        if let Some(msg) = exited { result.push_str(&format!("\n{msg}\n")); }
+        if let Some(msg) = exited {
+            result.push_str(&format!("\n{msg}\n"));
+        }
         text_result(result)
     }
 
@@ -387,8 +432,13 @@ impl Runner {
         Parameters(args): Parameters<SessionIdArgs>,
     ) -> Result<CallToolResult, McpError> {
         let mut sessions = self.sessions.lock().unwrap();
-        let session = sessions.get_mut(&args.session_id).ok_or_else(|| err("Session not found"))?;
+        let session = sessions
+            .get_mut(&args.session_id)
+            .ok_or_else(|| err("Session not found"))?;
         let running = reap_session(session).is_none();
-        text_result(format!("Running: {}, Exit code: {:?}", running, session.exit_code))
+        text_result(format!(
+            "Running: {}, Exit code: {:?}",
+            running, session.exit_code
+        ))
     }
 }

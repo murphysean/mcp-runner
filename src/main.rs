@@ -1,23 +1,21 @@
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
-    model::*,
-    tool_handler, prompt_handler,
-    handler::server::router::tool::ToolRouter,
     handler::server::router::prompt::PromptRouter,
-    schemars,
+    handler::server::router::tool::ToolRouter,
+    model::*,
+    prompt_handler, schemars,
     service::{NotificationContext, RequestContext},
-    Peer, RoleServer,
+    tool_handler, ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt,
 };
 use std::collections::HashMap;
 use std::future::Future;
 use std::process::Child;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
 
 mod http;
-mod tools;
 mod prompts;
 mod resources;
+mod tools;
 pub mod util;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -70,7 +68,9 @@ impl Runner {
         if let Some(peer) = self.peer.get() {
             let peer = peer.clone();
             tokio::spawn(async move {
-                peer.notify_resource_updated(ResourceUpdatedNotificationParam { uri }).await.ok();
+                peer.notify_resource_updated(ResourceUpdatedNotificationParam { uri })
+                    .await
+                    .ok();
             });
         }
     }

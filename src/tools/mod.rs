@@ -24,7 +24,7 @@ pub fn router() -> ToolRouter<Runner> {
 
 #[tool_router]
 impl Runner {
-    #[tool(description = "Start a new command session")]
+    #[tool(description = "Start a new command session. Returns a session_id for use with other tools.\n\nIMPORTANT about use_pty:\n- Set use_pty: true ONLY for programs that need terminal features (picocom, gdb TUI, serial consoles, text editors).\n- For simple commands (python scripts, builds, tests), use_pty: false (default) gives cleaner output with proper newlines.\n- PTY output contains ANSI cursor positioning codes that look messy when stripped. For simple commands, avoid PTY.\n\nUse split_stderr: true to capture stderr separately.")]
     async fn start_command(
         &self,
         Parameters(args): Parameters<StartCommandArgs>,
@@ -119,7 +119,7 @@ impl Runner {
         text_result(format!("Started command with session_id: {}", session_id))
     }
 
-    #[tool(description = "Stop a running command")]
+    #[tool(description = "Stop a running command by session_id. Sends SIGKILL to the process. Use send_signal with SIGINT for a graceful interrupt instead.")]
     async fn stop_command(
         &self,
         Parameters(args): Parameters<SessionIdArgs>,
@@ -185,7 +185,7 @@ impl Runner {
     }
 
     #[tool(
-        description = "Send input to a running command's stdin. Provide 'input' for text, 'bytes' for raw byte values (e.g. [1, 24] for Ctrl-A Ctrl-X), or set 'elicit: true' to prompt the user directly (for passwords/secrets - input never touches the LLM). Set 'await_response_ms' to block and collect output until idle for that many ms."
+        description = "Send input to a running command's stdin. IMPORTANT: To 'press Enter', include a newline character in your input string. Use \\n (a single backslash-n in the JSON string), NOT \\\\n (double-escaped). Examples: {\"input\": \"ls\\n\"} sends 'ls' followed by Enter. {\"input\": \"help\\n\"} sends 'help' followed by Enter. Wrong: {\"input\": \"ls\\\\n\"} sends literal characters 'ls\\n' with no Enter. For control characters, use 'bytes' instead: [1, 24] for Ctrl-A Ctrl-X. Set 'await_response_ms' to block and collect output until idle."
     )]
     async fn send_input(
         &self,
@@ -284,7 +284,7 @@ impl Runner {
         text_result("Input sent")
     }
 
-    #[tool(description = "Send a signal to a running command (e.g., SIGINT, SIGTERM, SIGKILL)")]
+    #[tool(description = "Send a Unix signal to a running command. Most common: SIGINT (like Ctrl-C, interrupts the program), SIGTERM (request graceful termination), SIGKILL (force kill). Use this to interrupt a running program like gdb or a REPL without killing the session.")]
     async fn send_signal(
         &self,
         Parameters(args): Parameters<SendSignalArgs>,
@@ -360,7 +360,7 @@ impl Runner {
         }
     }
 
-    #[tool(description = "Read new stdout data since last read")]
+    #[tool(description = "Read new stdout data since last read. Each call returns only new output (tracked per session).\n\nANSI escape codes are stripped by default (set strip_ansi: false to keep them).\n\nNOTE: If use_pty: true was set, output may contain cursor positioning codes that make it look messy when stripped. For clean output from simple commands, use use_pty: false.")]
     async fn read_output(
         &self,
         Parameters(args): Parameters<ReadOutputArgs>,
@@ -395,7 +395,7 @@ impl Runner {
         text_result(result)
     }
 
-    #[tool(description = "Read new stderr data since last read (only if split_stderr was true)")]
+    #[tool(description = "Read new stderr data since last read (only if split_stderr: true was set when starting). Each call returns only new output. ANSI escape codes are stripped by default (set strip_ansi: false to keep them).")]
     async fn read_stderr(
         &self,
         Parameters(args): Parameters<ReadOutputArgs>,
@@ -434,7 +434,7 @@ impl Runner {
         text_result(result)
     }
 
-    #[tool(description = "Get status of a command session")]
+    #[tool(description = "Get status of a command session. Returns whether the process is still running and its exit code (if finished). Use this to check if a long-running command has completed.")]
     async fn get_status(
         &self,
         Parameters(args): Parameters<SessionIdArgs>,

@@ -185,7 +185,7 @@ impl Runner {
     }
 
     #[tool(
-        description = "Send input to a running command's stdin. IMPORTANT: To 'press Enter', include a newline character in your input string. Use \\n (a single backslash-n in the JSON string), NOT \\\\n (double-escaped). Examples: {\"input\": \"ls\\n\"} sends 'ls' followed by Enter. {\"input\": \"help\\n\"} sends 'help' followed by Enter. Wrong: {\"input\": \"ls\\\\n\"} sends literal characters 'ls\\n' with no Enter. For control characters, use 'bytes' instead: [1, 24] for Ctrl-A Ctrl-X. Set 'await_response_ms' to block and collect output until idle."
+        description = "Send input to a running command's stdin.\n\nHOW TO SEND ENTER/NEWLINE:\n- In JSON, use a SINGLE backslash: {\"input\": \"command\\n\"}\n- This sends 'command' followed by Enter\n- WRONG: {\"input\": \"command\\\\n\"} sends literal characters 'command\\n' (no Enter)\n- For PTY sessions (gdb, picocom), you may need \\r\\n: {\"input\": \"command\\r\\n\"}\n- When in doubt, use bytes: {\"bytes\": [..., 13, 10]} where 13=CR, 10=newline\n\nFor control characters: [1,24]=Ctrl-A Ctrl-X, [10]=newline, [13]=carriage return.\nSet 'await_response_ms' to block and collect output until idle."
     )]
     async fn send_input(
         &self,

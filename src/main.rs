@@ -120,10 +120,10 @@ fn default_true() -> bool {
 pub struct SendInputArgs {
     /// Session ID
     pub session_id: String,
-    /// Text input to send. IMPORTANT: Include \n to send Enter/newline. Example: "ls\n" sends 'ls' then Enter. DO NOT use \\n (double-escaped) - that sends literal backslash-n characters.
+    /// Text input to send. For newline/Enter: write "command\\n" in your JSON (single backslash). WRONG: "command\\\\n" sends literal backslash-n. Use bytes=[...,10] if unsure.
     #[serde(default)]
     pub input: Option<String>,
-    /// Raw bytes to send (0-255). Use for control characters: [1, 24] = Ctrl-A Ctrl-X, [10] = newline/Enter, [13] = carriage return.
+    /// Raw bytes to send (0-255). Use for control characters or when newline escaping is confusing: [10]=newline, [13]=CR, [1,24]=Ctrl-A Ctrl-X. Example: "attach 1" + newline = [97,116,116,97,99,104,32,49,10]
     #[serde(default)]
     pub bytes: Option<Vec<u8>>,
     /// If true, prompt the user directly via MCP elicitation (for passwords/secrets - input never touches the LLM).

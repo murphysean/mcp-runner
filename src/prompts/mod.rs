@@ -1,9 +1,5 @@
-use rmcp::{
-    ErrorData as McpError,
-    model::*,
-    prompt, prompt_router,
-};
 use rmcp::handler::server::router::prompt::PromptRouter;
+use rmcp::{model::*, prompt, prompt_router, ErrorData as McpError};
 
 use crate::Runner;
 
@@ -13,7 +9,9 @@ pub fn router() -> PromptRouter<Runner> {
 
 #[prompt_router]
 impl Runner {
-    #[prompt(description = "Guide for using picocom serial terminal. Covers connecting to a device, reading output, and exiting gracefully with raw byte control sequences.")]
+    #[prompt(
+        description = "Guide for using picocom serial terminal. Covers connecting to a device, reading output, and exiting gracefully with raw byte control sequences."
+    )]
     async fn picocom_guide(&self) -> Result<Vec<PromptMessage>, McpError> {
         Ok(vec![PromptMessage::new_text(
             PromptMessageRole::User,
@@ -21,7 +19,9 @@ impl Runner {
         )])
     }
 
-    #[prompt(description = "Guide for using GDB (GNU Debugger) through the command wrapper. Covers starting GDB, common commands, and using Ctrl-C to interrupt execution.")]
+    #[prompt(
+        description = "Guide for using GDB (GNU Debugger) through the command wrapper. Covers starting GDB, common commands, and using Ctrl-C to interrupt execution."
+    )]
     async fn gdb_guide(&self) -> Result<Vec<PromptMessage>, McpError> {
         Ok(vec![PromptMessage::new_text(
             PromptMessageRole::User,
@@ -29,7 +29,9 @@ impl Runner {
         )])
     }
 
-    #[prompt(description = "Guide for on-device debugging with Black Magic Probe using GDB. Covers probe discovery, connecting, flashing, and debugging embedded targets.")]
+    #[prompt(
+        description = "Guide for on-device debugging with Black Magic Probe using GDB. Covers probe discovery, connecting, flashing, and debugging embedded targets."
+    )]
     async fn blackmagic_probe_guide(&self) -> Result<Vec<PromptMessage>, McpError> {
         Ok(vec![PromptMessage::new_text(
             PromptMessageRole::User,

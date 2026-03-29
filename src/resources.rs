@@ -1,11 +1,6 @@
-use rmcp::{
-    ErrorData as McpError,
-    model::*,
-    service::RequestContext,
-    RoleServer,
-};
+use rmcp::{model::*, service::RequestContext, ErrorData as McpError, RoleServer};
 
-use crate::{Runner, util};
+use crate::{util, Runner};
 
 impl Runner {
     pub async fn list_resource_templates(
@@ -46,15 +41,21 @@ impl Runner {
         let mut resources = Vec::new();
 
         for (id, session) in sessions.iter() {
-            resources.push(Annotated::new(RawResource::new(
-                format!("session://{id}/stdout"),
-                format!("Session {id} stdout"),
-            ), None));
+            resources.push(Annotated::new(
+                RawResource::new(
+                    format!("session://{id}/stdout"),
+                    format!("Session {id} stdout"),
+                ),
+                None,
+            ));
             if session.stderr_path.is_some() {
-                resources.push(Annotated::new(RawResource::new(
-                    format!("session://{id}/stderr"),
-                    format!("Session {id} stderr"),
-                ), None));
+                resources.push(Annotated::new(
+                    RawResource::new(
+                        format!("session://{id}/stderr"),
+                        format!("Session {id} stderr"),
+                    ),
+                    None,
+                ));
             }
         }
 
@@ -72,26 +73,37 @@ impl Runner {
     ) -> Result<ReadResourceResult, McpError> {
         let uri = &request.uri;
 
-        let rest = uri.strip_prefix("session://")
-            .ok_or_else(|| McpError::resource_not_found(format!("Unknown resource URI: {uri}"), None))?;
-        let (id, stream) = rest.rsplit_once('/')
-            .ok_or_else(|| McpError::resource_not_found(format!("Invalid resource URI: {uri}"), None))?;
+        let rest = uri.strip_prefix("session://").ok_or_else(|| {
+            McpError::resource_not_found(format!("Unknown resource URI: {uri}"), None)
+        })?;
+        let (id, stream) = rest.rsplit_once('/').ok_or_else(|| {
+            McpError::resource_not_found(format!("Invalid resource URI: {uri}"), None)
+        })?;
 
         let path = {
             let sessions = self.sessions.lock().unwrap();
-            let session = sessions.get(id)
-                .ok_or_else(|| McpError::resource_not_found(format!("Session not found: {id}"), None))?;
+            let session = sessions.get(id).ok_or_else(|| {
+                McpError::resource_not_found(format!("Session not found: {id}"), None)
+            })?;
             match stream {
                 "stdout" => session.stdout_path.clone(),
-                "stderr" => session.stderr_path.clone()
-                    .ok_or_else(|| McpError::resource_not_found("stderr not split for this session", None))?,
-                _ => return Err(McpError::resource_not_found(format!("Unknown stream: {stream}"), None)),
+                "stderr" => session.stderr_path.clone().ok_or_else(|| {
+                    McpError::resource_not_found("stderr not split for this session", None)
+                })?,
+                _ => {
+                    return Err(McpError::resource_not_found(
+                        format!("Unknown stream: {stream}"),
+                        None,
+                    ))
+                }
             }
         };
 
-        let text = util::read_file_full(&path)
-            .map_err(|e| McpError::internal_error(e, None))?;
+        let text = util::read_file_full(&path).map_err(|e| McpError::internal_error(e, None))?;
 
-        Ok(ReadResourceResult::new(vec![ResourceContents::text(text, uri.clone())]))
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            text,
+            uri.clone(),
+        )]))
     }
 }

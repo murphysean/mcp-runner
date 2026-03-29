@@ -1,14 +1,14 @@
 use axum::{
     extract::{Path, State},
-    response::{Html, IntoResponse, Response, Redirect},
-    routing::{get, delete},
+    response::{Html, IntoResponse, Redirect, Response},
+    routing::{delete, get},
     Form, Router,
 };
 use std::io::Write;
 use std::net::SocketAddr;
 
+use crate::util::{reap_session, remove_session};
 use crate::{ProcessHandle, Sessions};
-use crate::util::{remove_session, reap_session};
 
 pub async fn serve(sessions: Sessions) {
     let app = Router::new()
@@ -16,8 +16,14 @@ pub async fn serve(sessions: Sessions) {
         .route("/session/:id", delete(http_delete_session))
         .route("/session/:id/stdout", get(http_stdout))
         .route("/session/:id/stderr", get(http_stderr))
-        .route("/session/:id/input", get(http_input_form).post(http_input_submit))
-        .route("/session/:id/password", get(http_password_form).post(http_input_submit))
+        .route(
+            "/session/:id/input",
+            get(http_input_form).post(http_input_submit),
+        )
+        .route(
+            "/session/:id/password",
+            get(http_password_form).post(http_input_submit),
+        )
         .with_state(sessions);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8089));

@@ -185,7 +185,7 @@ impl Runner {
     }
 
     #[tool(
-        description = "Send input to a running command's stdin.\n\nHOW TO SEND ENTER/NEWLINE:\n- In JSON, use a SINGLE backslash: {\"input\": \"command\\n\"}\n- This sends 'command' followed by Enter\n- WRONG: {\"input\": \"command\\\\n\"} sends literal characters 'command\\n' (no Enter)\n- For PTY sessions (gdb, picocom), you may need \\r\\n: {\"input\": \"command\\r\\n\"}\n- When in doubt, use bytes: {\"bytes\": [..., 13, 10]} where 13=CR, 10=newline\n\nFor control characters: [1,24]=Ctrl-A Ctrl-X, [10]=newline, [13]=carriage return.\nSet 'await_response_ms' to block and collect output until idle."
+        description = "Send input to a running command's stdin.\n\nRECOMMENDED: Use await_response_ms to send input AND get output in one call:\n{\"session_id\": \"1\", \"input\": \"command\\r\\n\", \"await_response_ms\": 500}\nThis waits up to 500ms for output after sending, then returns both confirmation and response.\n\nHOW TO SEND ENTER/NEWLINE:\n- In JSON, use a SINGLE backslash: {\"input\": \"command\\n\"}\n- WRONG: {\"input\": \"command\\\\n\"} sends literal characters 'command\\n' (no Enter)\n- For PTY sessions (gdb, picocom), you may need \\r\\n: {\"input\": \"command\\r\\n\"}\n- When in doubt, use bytes: {\"bytes\": [..., 13, 10]} where 13=CR, 10=newline\n\nFor control characters: [1,24]=Ctrl-A Ctrl-X, [10]=newline, [13]=carriage return."
     )]
     async fn send_input(
         &self,

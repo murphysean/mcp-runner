@@ -132,7 +132,7 @@ pub struct SendInputArgs {
     /// Custom prompt message for elicitation. Defaults to "Enter input for process".
     #[serde(default)]
     pub elicit_message: Option<String>,
-    /// If set, block after sending input and collect output until no new data arrives for this many milliseconds, then return the output. Useful for request/response interactions (REPLs, serial consoles, debuggers).
+    /// RECOMMENDED: Wait this many ms after sending input, then return any output received. Use this to send AND get response in one call instead of separate send_input + read_output. Good values: 300-1000ms for REPLs.
     #[serde(default)]
     pub await_response_ms: Option<u64>,
 }

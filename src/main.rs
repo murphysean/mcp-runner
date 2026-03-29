@@ -87,13 +87,13 @@ impl Runner {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct StartCommandArgs {
-    /// Command to execute
+    /// Command to execute (e.g., "python3", "gdb", "picocom")
     pub command: String,
-    /// Command arguments
+    /// Command arguments (e.g., ["-m", "http.server", "8000"] or ["program.elf"])
     pub args: Option<Vec<String>>,
-    /// Split stderr from stdout (default: false)
+    /// Capture stderr separately from stdout. Set true to use read_stderr tool. Default: false (stderr merged into stdout).
     pub split_stderr: Option<bool>,
-    /// Spawn inside a pseudo-terminal (required for interactive programs like picocom, gdb TUI, etc.)
+    /// Run in a pseudo-terminal (PTY). ONLY use for programs that NEED terminal features (picocom, gdb TUI, serial consoles). For simple commands, leave false for cleaner output. PTY output has ANSI cursor codes that look messy when stripped.
     pub use_pty: Option<bool>,
 }
 
@@ -105,9 +105,9 @@ pub struct SessionIdArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadOutputArgs {
-    /// Session ID
+    /// Session ID returned by start_command
     pub session_id: String,
-    /// Strip ANSI escape sequences from output (default: true)
+    /// Strip ANSI escape codes (colors, cursor movement, etc.). Default: true. Set false to keep raw codes.
     #[serde(default = "default_true")]
     pub strip_ansi: bool,
 }
@@ -120,16 +120,16 @@ fn default_true() -> bool {
 pub struct SendInputArgs {
     /// Session ID
     pub session_id: String,
-    /// Text input to send as a UTF-8 string
+    /// Text input to send. IMPORTANT: Include \n to send Enter/newline. Example: "ls\n" sends 'ls' then Enter. DO NOT use \\n (double-escaped) - that sends literal backslash-n characters.
     #[serde(default)]
     pub input: Option<String>,
-    /// Raw bytes to send, as an array of integer values 0-255. Use this for control characters (e.g. [1, 24] for Ctrl-A Ctrl-X).
+    /// Raw bytes to send (0-255). Use for control characters: [1, 24] = Ctrl-A Ctrl-X, [10] = newline/Enter, [13] = carriage return.
     #[serde(default)]
     pub bytes: Option<Vec<u8>>,
-    /// If true, prompt the user directly for input via MCP elicitation (e.g. for passwords). The input never passes through the LLM. Provide 'elicit_message' to customize the prompt.
+    /// If true, prompt the user directly via MCP elicitation (for passwords/secrets - input never touches the LLM).
     #[serde(default)]
     pub elicit: Option<bool>,
-    /// Custom message to show the user when eliciting input. Defaults to "Enter input for process".
+    /// Custom prompt message for elicitation. Defaults to "Enter input for process".
     #[serde(default)]
     pub elicit_message: Option<String>,
     /// If set, block after sending input and collect output until no new data arrives for this many milliseconds, then return the output. Useful for request/response interactions (REPLs, serial consoles, debuggers).
@@ -139,9 +139,9 @@ pub struct SendInputArgs {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SendSignalArgs {
-    /// Session ID
+    /// Session ID returned by start_command
     pub session_id: String,
-    /// Signal name (SIGINT, SIGTERM, SIGKILL, SIGSTOP, SIGCONT, SIGHUP, SIGQUIT)
+    /// Signal to send: SIGINT (Ctrl-C), SIGTERM (graceful stop), SIGKILL (force kill), SIGSTOP (pause), SIGCONT (resume), SIGHUP (reload), SIGQUIT (quit with core dump)
     pub signal: String,
 }
 

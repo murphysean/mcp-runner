@@ -1,27 +1,35 @@
 use axum::{
-    extract::{Path, State},
-    response::{Html, IntoResponse, Redirect, Response},
+    extract::{Path, Query, State},
+    http::HeaderMap,
+    response::{Html, IntoResponse, Redirect, Response, sse::Sse},
     routing::{delete, get},
     Form, Router,
 };
+use futures::stream::Stream;
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
-use crate::util::{reap_session, remove_session};
+use crate::util::{ansi_to_html, reap_session, remove_session, strip_ansi};
 use crate::{ProcessHandle, Sessions};
 
 pub async fn serve(sessions: Sessions) {
     let app = Router::new()
         .route("/", get(http_index))
-        .route("/session/:id", delete(http_delete_session))
-        .route("/session/:id/stdout", get(http_stdout))
-        .route("/session/:id/stderr", get(http_stderr))
+        .route("/session/{id}", delete(http_delete_session))
+        .route("/session/{id}/stdout", get(http_stdout))
+        .route("/session/{id}/stderr", get(http_stderr))
+        .route("/session/{id}/stdout/stream", get(http_stdout_stream))
+        .route("/session/{id}/stderr/stream", get(http_stderr_stream))
         .route(
-            "/session/:id/input",
+            "/session/{id}/input",
             get(http_input_form).post(http_input_submit),
         )
         .route(
-            "/session/:id/password",
+            "/session/{id}/password",
             get(http_password_form).post(http_input_submit),
         )
         .with_state(sessions);
@@ -53,10 +61,10 @@ async fn http_index(State(sessions): State<Sessions>) -> Html<String> {
                 }
             };
             html.push_str(&format!(
-                "<li>{id} ({status}) <a href=\"/session/{id}/stdout\">stdout</a>"
+                "<li>{id} ({status}) <a href=\"/session/{id}/stdout\">stdout</a> | <a href=\"/session/{id}/stdout/stream\">stream</a>"
             ));
             if session.stderr_path.is_some() {
-                html.push_str(&format!(" | <a href=\"/session/{id}/stderr\">stderr</a>"));
+                html.push_str(&format!(" | <a href=\"/session/{id}/stderr\">stderr</a> | <a href=\"/session/{id}/stderr/stream\">stream</a>"));
             }
             html.push_str(&format!(
                 " | <a href=\"/session/{id}/input\">input</a>\
@@ -80,29 +88,72 @@ async fn http_delete_session(State(sessions): State<Sessions>, Path(id): Path<St
     }
 }
 
-async fn http_stdout(State(sessions): State<Sessions>, Path(id): Path<String>) -> Response {
+async fn http_stdout(
+    State(sessions): State<Sessions>,
+    Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     let sessions = sessions.lock().unwrap();
     match sessions.get(&id) {
         Some(s) => match std::fs::read_to_string(&s.stdout_path) {
-            Ok(c) => Html(format!("<pre>{c}</pre><a href=\"/\">Back</a>")).into_response(),
+            Ok(c) => {
+                let (content, mode_links) = format_output(&c, &id, "stdout", &params);
+                Html(format!("<pre>{}</pre>{} | <a href=\"/session/{}/stdout/stream\">Stream (SSE)</a>",
+                    content, mode_links, id)).into_response()
+            }
             Err(_) => Html("Error reading stdout".to_string()).into_response(),
         },
         None => Html("Session not found".to_string()).into_response(),
     }
 }
 
-async fn http_stderr(State(sessions): State<Sessions>, Path(id): Path<String>) -> Response {
+async fn http_stderr(
+    State(sessions): State<Sessions>,
+    Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     let sessions = sessions.lock().unwrap();
     match sessions.get(&id) {
         Some(s) => match &s.stderr_path {
             Some(p) => match std::fs::read_to_string(p) {
-                Ok(c) => Html(format!("<pre>{c}</pre><a href=\"/\">Back</a>")).into_response(),
+                Ok(c) => {
+                    let (content, mode_links) = format_output(&c, &id, "stderr", &params);
+                    Html(format!("<pre>{}</pre>{} | <a href=\"/\">Back</a>",
+                        content, mode_links)).into_response()
+                }
                 Err(_) => Html("Error reading stderr".to_string()).into_response(),
             },
             None => Html("stderr not split".to_string()).into_response(),
         },
         None => Html("Session not found".to_string()).into_response(),
     }
+}
+
+/// Format output based on query params: default (HTML), ?raw=1 (keep ANSI), ?strip=1 (plain text)
+fn format_output(content: &str, id: &str, stream: &str, _params: &HashMap<String, String>) -> (String, String) {
+    let mode_links = format!(
+        "<a href=\"/\">Back</a> | <a href=\"/session/{id}/{stream}?raw=1\">Raw</a> | <a href=\"/session/{id}/{stream}?strip=1\">Strip</a>"
+    );
+
+    let content = if _params.contains_key("raw") {
+        // Keep ANSI codes as-is, but HTML-escape
+        html_escape(content)
+    } else if _params.contains_key("strip") {
+        // Strip ANSI codes, plain text
+        strip_ansi(content)
+    } else {
+        // Default: convert ANSI to HTML
+        ansi_to_html(content)
+    };
+
+    (content, mode_links)
+}
+
+/// HTML-escape special characters
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[derive(serde::Deserialize)]
@@ -179,4 +230,147 @@ async fn http_input_submit(
     }
 
     Redirect::to(&format!("/session/{id}/input")).into_response()
+}
+
+// SSE streaming for stdout
+async fn http_stdout_stream(
+    State(sessions): State<Sessions>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let (stdout_path, session_pos) = {
+        let sessions = sessions.lock().unwrap();
+        match sessions.get(&id) {
+            Some(s) => (s.stdout_path.clone(), s.stdout_pos),
+            None => return Html("Session not found".to_string()).into_response(),
+        }
+    };
+
+    // Use Last-Event-ID header if present, otherwise use session position
+    let initial_pos = parse_last_event_id(&headers).unwrap_or(session_pos);
+    let keep_ansi = params.contains_key("raw");
+    let stream = create_log_stream(sessions, id, stdout_path, initial_pos, keep_ansi);
+    Sse::new(stream).into_response()
+}
+
+// SSE streaming for stderr
+async fn http_stderr_stream(
+    State(sessions): State<Sessions>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let (stderr_path, session_pos) = {
+        let sessions = sessions.lock().unwrap();
+        match sessions.get(&id) {
+            Some(s) => match &s.stderr_path {
+                Some(p) => (p.clone(), s.stderr_pos),
+                None => return Html("stderr not split".to_string()).into_response(),
+            },
+            None => return Html("Session not found".to_string()).into_response(),
+        }
+    };
+
+    // Use Last-Event-ID header if present, otherwise use session position
+    let initial_pos = parse_last_event_id(&headers).unwrap_or(session_pos);
+    let keep_ansi = params.contains_key("raw");
+    let stream = create_log_stream(sessions, id, stderr_path, initial_pos, keep_ansi);
+    Sse::new(stream).into_response()
+}
+
+fn parse_last_event_id(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok())
+}
+
+fn create_log_stream(
+    sessions: Sessions,
+    session_id: String,
+    log_path: String,
+    initial_pos: u64,
+    keep_ansi: bool,
+) -> impl Stream<Item = Result<axum::response::sse::Event, axum::Error>> {
+    let pos = Arc::new(AtomicU64::new(initial_pos));
+
+    async_stream::stream! {
+        loop {
+            // Check if process is still running
+            let running = {
+                let sessions = sessions.lock().unwrap();
+                match sessions.get(&session_id) {
+                    Some(s) => s.process.is_some(),
+                    None => break,
+                }
+            };
+
+            // Read new content from current position
+            let current_pos = pos.load(Ordering::Relaxed);
+            match read_lines_from_position(&log_path, current_pos) {
+                Ok((lines, new_pos)) => {
+                    for line in lines {
+                        let line = if keep_ansi { line } else { strip_ansi(&line) };
+                        let id = pos.load(Ordering::Relaxed);
+                        yield Ok(axum::response::sse::Event::default()
+                            .id(id.to_string())
+                            .data(&line));
+                    }
+                    pos.store(new_pos, Ordering::Relaxed);
+                }
+                Err(_) => break,
+            }
+
+            // If process exited and no new data, we're done
+            if !running {
+                let current_pos = pos.load(Ordering::Relaxed);
+                match read_lines_from_position(&log_path, current_pos) {
+                    Ok((lines, new_pos)) => {
+                        if lines.is_empty() {
+                            yield Ok(axum::response::sse::Event::default()
+                                .event("done")
+                                .data("[process exited]"));
+                            break;
+                        }
+                        for line in lines {
+                            let line = if keep_ansi { line } else { strip_ansi(&line) };
+                            let id = pos.load(Ordering::Relaxed);
+                            yield Ok(axum::response::sse::Event::default()
+                                .id(id.to_string())
+                                .data(&line));
+                        }
+                        pos.store(new_pos, Ordering::Relaxed);
+                    }
+                    Err(_) => break,
+                }
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+fn read_lines_from_position(path: &str, pos: u64) -> Result<(Vec<String>, u64), String> {
+    use std::io::{Read, Seek};
+
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let file_size = file.metadata().map_err(|e| e.to_string())?.len();
+
+    if pos >= file_size {
+        return Ok((Vec::new(), pos));
+    }
+
+    file.seek(std::io::SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).map_err(|e| e.to_string())?;
+
+    let content = String::from_utf8_lossy(&data);
+    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+
+    // Calculate new position: each line includes its content + newline
+    let new_pos = pos + content.len() as u64;
+
+    Ok((lines, new_pos))
 }

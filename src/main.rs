@@ -104,6 +104,19 @@ pub struct SessionIdArgs {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadOutputArgs {
+    /// Session ID
+    pub session_id: String,
+    /// Strip ANSI escape sequences from output (default: true)
+    #[serde(default = "default_true")]
+    pub strip_ansi: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SendInputArgs {
     /// Session ID
     pub session_id: String,

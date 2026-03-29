@@ -124,6 +124,17 @@ Send input to a running command's stdin. Supports text, raw bytes, and MCP elici
 
 At least one of `input`, `bytes`, or `elicit: true` must be provided. If `input` is present it takes priority over `bytes`. `await_response_ms` composes with any input mode.
 
+**Important: Newlines**
+Include `\n` in the JSON string to send a newline (Enter key). Do NOT double-escape:
+- ✓ `"input": "ls\n"` — correct, sends `ls` followed by Enter
+- ✗ `"input": "ls\\n"` — wrong, sends literal characters `ls\n` (no Enter)
+
+When in doubt, use the `bytes` parameter with byte 10 (newline):
+```json
+{"session_id": "1", "bytes": [108, 115, 10]}
+```
+This sends `l`, `s`, then newline, eliminating escape confusion.
+
 **Examples:**
 ```json
 {"session_id": "1", "input": "print('hello')\n", "await_response_ms": 1000}
@@ -149,16 +160,18 @@ Read new stdout data since last read.
 
 **Parameters:**
 - `session_id` (string, required): Session ID
+- `strip_ansi` (boolean, optional): Strip ANSI escape sequences from output (default: true)
 
-**Returns:** New output text
+**Returns:** New output text (with ANSI stripped by default)
 
 #### `read_stderr`
 Read new stderr data since last read (only if `split_stderr` was true).
 
 **Parameters:**
 - `session_id` (string, required): Session ID
+- `strip_ansi` (boolean, optional): Strip ANSI escape sequences from output (default: true)
 
-**Returns:** New stderr text
+**Returns:** New stderr text (with ANSI stripped by default)
 
 #### `stop_command`
 Stop a running command.
@@ -179,6 +192,68 @@ Get status of a command session.
 - `session_id` (string, required): Session ID
 
 **Returns:** Running status and exit code (if finished)
+
+### HTTP Endpoints
+
+The MCP runner provides an HTTP interface on port 8089 for monitoring sessions:
+
+- `GET /` — List all sessions with status and links
+- `GET /session/{id}/stdout` — View current stdout content
+- `GET /session/{id}/stderr` — View current stderr content
+- `GET /session/{id}/stdout/stream` — SSE stream of stdout (like `tail -f`)
+- `GET /session/{id}/stderr/stream` — SSE stream of stderr (like `tail -f`)
+- `POST /session/{id}/input` — Send input to the process
+- `DELETE /session/{id}` — Delete a session
+
+#### ANSI Escape Code Handling
+
+HTTP endpoints handle ANSI escape codes (colors, bold, etc.) in three modes:
+
+| Query Param | Behavior |
+|-------------|----------|
+| *(default)* | Convert ANSI to styled HTML (colors, bold, etc.) |
+| `?raw=1` | Keep ANSI codes as-is |
+| `?strip=1` | Strip ANSI codes, plain text |
+
+Examples:
+- `GET /session/1/stdout` — HTML with styled output
+- `GET /session/1/stdout?raw=1` — Raw output with ANSI codes
+- `GET /session/1/stdout?strip=1` — Plain text without ANSI
+
+For SSE streams, the default is stripped (clean data). Use `?raw=1` to keep ANSI codes:
+- `GET /session/1/stdout/stream` — Stripped output
+- `GET /session/1/stdout/stream?raw=1` — Raw output with ANSI codes
+
+#### SSE Streaming
+
+The `/session/{id}/stdout/stream` and `/session/{id}/stderr/stream` endpoints use Server-Sent Events (SSE) to stream output in real-time:
+
+```
+id: 42
+data: Hello, world!
+
+id: 58
+data: Another line
+
+event: done
+data: [process exited]
+```
+
+- Each event has an `id` field containing the byte offset (useful for resume)
+- The `data` field contains one line of output
+- When the process exits, a final `event: done` message is sent
+
+**Resume from last position:** Include `Last-Event-ID` header with the byte offset to resume from:
+```bash
+curl -H "Last-Event-ID: 42" http://localhost:8089/session/1/stdout/stream
+```
+
+**JavaScript example:**
+```javascript
+const source = new EventSource('/session/1/stdout/stream');
+source.onmessage = (e) => console.log(e.data);
+source.addEventListener('done', () => source.close());
+```
 
 ### Available Prompts
 
@@ -229,6 +304,7 @@ Guide for on-device debugging with Black Magic Probe. Covers probe discovery, co
 
 ## TODO
 
+- [x] **HTTP Streaming**: SSE endpoints for real-time stdout/stderr streaming (`/session/{id}/stdout/stream`, `/session/{id}/stderr/stream`)
 - [ ] **MCP Resources**: Expose session stdout/stderr as subscribable MCP resources (e.g. `session://1/stdout`). Push updates via `notify_resource_updated` so clients can display live output without polling.
 - [ ] **MCP Logging Notifications**: Stream process output to the client log in real-time via `notify_logging_message`, so agents can passively watch long-running builds or servers without calling `read_output`.
 - [ ] **Progress Notifications**: Send `notify_progress` updates while `await_response_ms` is blocking, so clients can show elapsed time or parsed build progress.

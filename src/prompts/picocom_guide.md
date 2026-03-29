@@ -13,6 +13,13 @@ Use `read_output` with the session_id. Picocom prints connection info first, the
 ## Sending input
 Use `send_input` with `input` for text, or `bytes` for raw control characters.
 
+**Important: Newlines**
+Include `\n` in the JSON string to send a newline. Do NOT double-escape:
+- ✓ `"input": "help\n"` — correct, sends `help` followed by Enter
+- ✗ `"input": "help\\n"` — wrong, sends literal characters `help\n` (no Enter)
+
+When in doubt, use `bytes` with byte 10 (newline): `{"bytes": [104, 101, 108, 112, 10]}`
+
 ## IMPORTANT: Exiting picocom
 You MUST use raw bytes to exit picocom. The escape sequence is Ctrl-A then Ctrl-X:
 ```json

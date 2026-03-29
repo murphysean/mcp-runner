@@ -18,11 +18,18 @@ Typically: `/dev/ttyACM0` (GDB) and `/dev/ttyACM1` (UART).
 
 ## Connecting to the probe
 Send these commands in sequence using `send_input` with `await_response_ms`:
+```json
+{"session_id": "...", "input": "target extended-remote /dev/ttyACM0\n", "await_response_ms": 2000}
+{"session_id": "...", "input": "monitor swdp_scan\n", "await_response_ms": 2000}
+{"session_id": "...", "input": "attach 1\n", "await_response_ms": 1000}
 ```
-target extended-remote /dev/ttyACM0
-monitor swdp_scan
-attach 1
-```
+
+**Important: Newlines**
+Always include `\n` at the end of commands. Do NOT double-escape:
+- ✓ `"input": "load\n"` — correct, sends `load` followed by Enter
+- ✗ `"input": "load\\n"` — wrong, sends literal characters `load\n` (no Enter)
+
+When in doubt, use `bytes` with byte 10 (newline): `{"bytes": [108, 111, 97, 100, 10]}`
 - `target extended-remote` connects to the BMP GDB server
 - `monitor swdp_scan` scans the SWD bus and lists found targets
 - `attach 1` attaches to the first target found

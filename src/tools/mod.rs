@@ -10,12 +10,12 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::util::{
-    err, exit_code_from_status, pipe_to_file, pty_pipe_to_file, read_from_position, reap_session,
-    remove_session, text_result,
+    err, exit_code_from_status, pipe_to_file, pty_pipe_to_file, read_from_position,
+    reap_session, remove_session, strip_ansi, text_result,
 };
 use crate::{
-    ElicitedInput, ProcessHandle, Runner, SendInputArgs, SendSignalArgs, Session, SessionIdArgs,
-    StartCommandArgs,
+    ElicitedInput, ProcessHandle, ReadOutputArgs, Runner, SendInputArgs, SendSignalArgs, Session,
+    SessionIdArgs, StartCommandArgs,
 };
 
 pub fn router() -> ToolRouter<Runner> {
@@ -363,7 +363,7 @@ impl Runner {
     #[tool(description = "Read new stdout data since last read")]
     async fn read_output(
         &self,
-        Parameters(args): Parameters<SessionIdArgs>,
+        Parameters(args): Parameters<ReadOutputArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (path, pos) = {
             let sessions = self.sessions.lock().unwrap();
@@ -384,7 +384,11 @@ impl Runner {
             reap_session(s)
         };
 
-        let mut result = data;
+        let mut result = if args.strip_ansi {
+            strip_ansi(&data)
+        } else {
+            data
+        };
         if let Some(msg) = exited {
             result.push_str(&format!("\n{msg}\n"));
         }
@@ -394,7 +398,7 @@ impl Runner {
     #[tool(description = "Read new stderr data since last read (only if split_stderr was true)")]
     async fn read_stderr(
         &self,
-        Parameters(args): Parameters<SessionIdArgs>,
+        Parameters(args): Parameters<ReadOutputArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (path, pos) = {
             let sessions = self.sessions.lock().unwrap();
@@ -419,7 +423,11 @@ impl Runner {
             reap_session(s)
         };
 
-        let mut result = data;
+        let mut result = if args.strip_ansi {
+            strip_ansi(&data)
+        } else {
+            data
+        };
         if let Some(msg) = exited {
             result.push_str(&format!("\n{msg}\n"));
         }

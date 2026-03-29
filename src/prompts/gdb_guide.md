@@ -15,7 +15,13 @@ Use `send_input` with `await_response_ms` to send a command and get the response
 ```json
 {"session_id": "...", "input": "target remote :3333\n", "await_response_ms": 3000}
 ```
-Always include `\n` at the end of commands.
+
+**Important: Newlines**
+Always include `\n` at the end of commands. Do NOT double-escape:
+- ✓ `"input": "continue\n"` — correct, sends `continue` followed by Enter
+- ✗ `"input": "continue\\n"` — wrong, sends literal characters `continue\n` (no Enter)
+
+When in doubt, use `bytes` with byte 10 (newline): `{"bytes": [99, 111, 110, 116, 105, 110, 117, 101, 10]}`
 
 ## Interrupting execution
 When the target is running (e.g. after `continue`), send SIGINT to break:

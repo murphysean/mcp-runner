@@ -9,6 +9,17 @@ use std::process::ExitStatus;
 
 use crate::{ProcessHandle, Session};
 
+/// Strip ANSI escape sequences from a string
+pub fn strip_ansi(s: &str) -> String {
+    let bytes = strip_ansi_escapes::strip(s.as_bytes());
+    String::from_utf8_lossy(&bytes).to_string()
+}
+
+/// Convert ANSI escape sequences to HTML with inline styles
+pub fn ansi_to_html(s: &str) -> String {
+    ansi_to_html::convert(s).unwrap_or_else(|_| strip_ansi(s))
+}
+
 pub fn text_result(msg: impl Into<String>) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(msg.into())]))
 }

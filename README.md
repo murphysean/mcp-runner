@@ -305,7 +305,8 @@ Guide for on-device debugging with Black Magic Probe. Covers probe discovery, co
 ## TODO
 
 - [x] **HTTP Streaming**: SSE endpoints for real-time stdout/stderr streaming (`/session/{id}/stdout/stream`, `/session/{id}/stderr/stream`)
-- [ ] **MCP Resources**: Expose session stdout/stderr as subscribable MCP resources (e.g. `session://1/stdout`). Push updates via `notify_resource_updated` so clients can display live output without polling.
+- [x] **HTTP Follow Pages**: Live HTML pages that display SSE streams (`/session/{id}/stdout/follow`, `/session/{id}/stderr/follow`)
+- [x] **MCP Resources**: Expose session stdout/stderr as subscribable MCP resources (`session://1/stdout`). Push updates via `notify_resource_updated`.
 - [ ] **MCP Logging Notifications**: Stream process output to the client log in real-time via `notify_logging_message`, so agents can passively watch long-running builds or servers without calling `read_output`.
 - [ ] **Progress Notifications**: Send `notify_progress` updates while `await_response_ms` is blocking, so clients can show elapsed time or parsed build progress.
 

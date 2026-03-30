@@ -249,8 +249,10 @@ async fn http_stdout_stream(
         }
     };
 
-    // Use Last-Event-ID header if present, otherwise use session position
-    let initial_pos = parse_last_event_id(&headers).unwrap_or(session_pos);
+    // Use Last-Event-ID header if present, then ?from= param, then session position
+    let initial_pos = parse_last_event_id(&headers)
+        .or_else(|| params.get("from").and_then(|v| v.parse().ok()))
+        .unwrap_or(session_pos);
 
     // Mode: default (html), ?raw=1 (keep ansi), ?strip=1 (plain text)
     let mode = if params.contains_key("raw") {
@@ -282,8 +284,10 @@ async fn http_stderr_stream(
         }
     };
 
-    // Use Last-Event-ID header if present, otherwise use session position
-    let initial_pos = parse_last_event_id(&headers).unwrap_or(session_pos);
+    // Use Last-Event-ID header if present, then ?from= param, then session position
+    let initial_pos = parse_last_event_id(&headers)
+        .or_else(|| params.get("from").and_then(|v| v.parse().ok()))
+        .unwrap_or(session_pos);
 
     // Mode: default (html), ?raw=1 (keep ansi), ?strip=1 (plain text)
     let mode = if params.contains_key("raw") {
@@ -336,7 +340,8 @@ fn render_follow_page(id: &str, stream: &str) -> Html<String> {
     <script>
         const output = document.getElementById('output');
         const status = document.getElementById('status');
-        const eventSource = new EventSource('/session/{id}/{stream}/stream');
+        // Start from beginning (from=0) to get all existing + new content
+        const eventSource = new EventSource('/session/{id}/{stream}/stream?from=0');
 
         eventSource.onmessage = function(e) {{
             const line = document.createElement('div');

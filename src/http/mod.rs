@@ -251,8 +251,16 @@ async fn http_stdout_stream(
 
     // Use Last-Event-ID header if present, otherwise use session position
     let initial_pos = parse_last_event_id(&headers).unwrap_or(session_pos);
-    let keep_ansi = params.contains_key("raw");
-    let stream = create_log_stream(sessions, id, stdout_path, initial_pos, keep_ansi);
+
+    // Mode: default (html), ?raw=1 (keep ansi), ?strip=1 (plain text)
+    let mode = if params.contains_key("raw") {
+        "raw".to_string()
+    } else if params.contains_key("strip") {
+        "strip".to_string()
+    } else {
+        "html".to_string()
+    };
+    let stream = create_log_stream(sessions, id, stdout_path, initial_pos, mode);
     Sse::new(stream).into_response()
 }
 
@@ -276,8 +284,16 @@ async fn http_stderr_stream(
 
     // Use Last-Event-ID header if present, otherwise use session position
     let initial_pos = parse_last_event_id(&headers).unwrap_or(session_pos);
-    let keep_ansi = params.contains_key("raw");
-    let stream = create_log_stream(sessions, id, stderr_path, initial_pos, keep_ansi);
+
+    // Mode: default (html), ?raw=1 (keep ansi), ?strip=1 (plain text)
+    let mode = if params.contains_key("raw") {
+        "raw".to_string()
+    } else if params.contains_key("strip") {
+        "strip".to_string()
+    } else {
+        "html".to_string()
+    };
+    let stream = create_log_stream(sessions, id, stderr_path, initial_pos, mode);
     Sse::new(stream).into_response()
 }
 
@@ -325,7 +341,7 @@ fn render_follow_page(id: &str, stream: &str) -> Html<String> {
         eventSource.onmessage = function(e) {{
             const line = document.createElement('div');
             line.className = 'line';
-            line.textContent = e.data;
+            line.innerHTML = e.data;
             output.appendChild(line);
             window.scrollTo(0, document.body.scrollHeight);
         }};
@@ -350,7 +366,7 @@ fn create_log_stream(
     session_id: String,
     log_path: String,
     initial_pos: u64,
-    keep_ansi: bool,
+    mode: String,
 ) -> impl Stream<Item = Result<axum::response::sse::Event, axum::Error>> {
     let pos = Arc::new(AtomicU64::new(initial_pos));
 
@@ -370,7 +386,11 @@ fn create_log_stream(
             match read_lines_from_position(&log_path, current_pos) {
                 Ok((lines, new_pos)) => {
                     for line in lines {
-                        let line = if keep_ansi { line } else { strip_ansi(&line) };
+                        let line = match mode.as_str() {
+                            "raw" => line,
+                            "strip" => strip_ansi(&line),
+                            _ => ansi_to_html(&line),
+                        };
                         let id = pos.load(Ordering::Relaxed);
                         yield Ok(axum::response::sse::Event::default()
                             .id(id.to_string())
@@ -393,7 +413,11 @@ fn create_log_stream(
                             break;
                         }
                         for line in lines {
-                            let line = if keep_ansi { line } else { strip_ansi(&line) };
+                            let line = match mode.as_str() {
+                                "raw" => line,
+                                "strip" => strip_ansi(&line),
+                                _ => ansi_to_html(&line),
+                            };
                             let id = pos.load(Ordering::Relaxed);
                             yield Ok(axum::response::sse::Event::default()
                                 .id(id.to_string())

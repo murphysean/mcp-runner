@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "runner": {
+      "command": "mcp-runner"
+    }
+  }
+}

@@ -24,6 +24,8 @@ pub async fn serve(sessions: Sessions) {
         .route("/session/{id}/stderr", get(http_stderr))
         .route("/session/{id}/stdout/stream", get(http_stdout_stream))
         .route("/session/{id}/stderr/stream", get(http_stderr_stream))
+        .route("/session/{id}/stdout/follow", get(http_stdout_follow))
+        .route("/session/{id}/stderr/follow", get(http_stderr_follow))
         .route(
             "/session/{id}/input",
             get(http_input_form).post(http_input_submit),
@@ -61,10 +63,10 @@ async fn http_index(State(sessions): State<Sessions>) -> Html<String> {
                 }
             };
             html.push_str(&format!(
-                "<li>{id} ({status}) <a href=\"/session/{id}/stdout\">stdout</a> | <a href=\"/session/{id}/stdout/stream\">stream</a>"
+                "<li>{id} ({status}) <a href=\"/session/{id}/stdout\">stdout</a> | <a href=\"/session/{id}/stdout/follow\">follow</a>"
             ));
             if session.stderr_path.is_some() {
-                html.push_str(&format!(" | <a href=\"/session/{id}/stderr\">stderr</a> | <a href=\"/session/{id}/stderr/stream\">stream</a>"));
+                html.push_str(&format!(" | <a href=\"/session/{id}/stderr\">stderr</a> | <a href=\"/session/{id}/stderr/follow\">follow</a>"));
             }
             html.push_str(&format!(
                 " | <a href=\"/session/{id}/input\">input</a>\
@@ -98,7 +100,7 @@ async fn http_stdout(
         Some(s) => match std::fs::read_to_string(&s.stdout_path) {
             Ok(c) => {
                 let (content, mode_links) = format_output(&c, &id, "stdout", &params);
-                Html(format!("<pre>{}</pre>{} | <a href=\"/session/{}/stdout/stream\">Stream (SSE)</a>",
+                Html(format!("<pre>{}</pre>{} | <a href=\"/session/{}/stdout/follow\">Follow Live</a>",
                     content, mode_links, id)).into_response()
             }
             Err(_) => Html("Error reading stdout".to_string()).into_response(),
@@ -118,8 +120,8 @@ async fn http_stderr(
             Some(p) => match std::fs::read_to_string(p) {
                 Ok(c) => {
                     let (content, mode_links) = format_output(&c, &id, "stderr", &params);
-                    Html(format!("<pre>{}</pre>{} | <a href=\"/\">Back</a>",
-                        content, mode_links)).into_response()
+                    Html(format!("<pre>{}</pre>{} | <a href=\"/session/{}/stderr/follow\">Follow Live</a>",
+                        content, mode_links, id)).into_response()
                 }
                 Err(_) => Html("Error reading stderr".to_string()).into_response(),
             },
@@ -284,6 +286,63 @@ fn parse_last_event_id(headers: &HeaderMap) -> Option<u64> {
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
+}
+
+// HTML page that follows stdout stream using EventSource
+async fn http_stdout_follow(Path(id): Path<String>) -> Html<String> {
+    render_follow_page(&id, "stdout")
+}
+
+// HTML page that follows stderr stream using EventSource
+async fn http_stderr_follow(Path(id): Path<String>) -> Html<String> {
+    render_follow_page(&id, "stderr")
+}
+
+fn render_follow_page(id: &str, stream: &str) -> Html<String> {
+    Html(format!(r##"<!DOCTYPE html>
+<html>
+<head>
+    <title>Follow {stream} - Session {id}</title>
+    <style>
+        body {{ font-family: monospace; margin: 10px; background: #1a1a1a; color: #ddd; }}
+        #output {{ white-space: pre-wrap; word-wrap: break-word; }}
+        .line {{ margin: 0; }}
+        #status {{ position: fixed; bottom: 10px; right: 10px; padding: 5px 10px; border-radius: 3px; }}
+        .connected {{ background: #2a2; }}
+        .disconnected {{ background: #a22; }}
+        a {{ color: #6af; }}
+    </style>
+</head>
+<body>
+    <h3>Session {id} - {stream}</h3>
+    <div id="status" class="connected">Live</div>
+    <div id="output"></div>
+    <script>
+        const output = document.getElementById('output');
+        const status = document.getElementById('status');
+        const eventSource = new EventSource('/session/{id}/{stream}/stream');
+
+        eventSource.onmessage = function(e) {{
+            const line = document.createElement('div');
+            line.className = 'line';
+            line.textContent = e.data;
+            output.appendChild(line);
+            window.scrollTo(0, document.body.scrollHeight);
+        }};
+
+        eventSource.addEventListener('done', function(e) {{
+            status.textContent = 'Exited';
+            status.className = 'disconnected';
+            eventSource.close();
+        }});
+
+        eventSource.onerror = function() {{
+            status.textContent = 'Disconnected';
+            status.className = 'disconnected';
+        }};
+    </script>
+</body>
+</html>"##))
 }
 
 fn create_log_stream(

@@ -13,16 +13,12 @@ Or attach to a remote target:
 ## Sending commands
 Use `send_input` with `await_response_ms` to send a command and get the response in one call:
 ```json
-{"session_id": "...", "input": "target remote :3333\n", "await_response_ms": 3000}
+{"session_id": "...", "input": "target remote :3333", "await_response_ms": 3000}
 ```
 
-**Important: Newlines for PTY sessions**
-GDB runs in a PTY and expects `\r\n` (carriage return + newline) for Enter:
-- ✓ `"input": "continue\r\n"` — correct for PTY/GDB
-- ✗ `"input": "continue\\n"` — sends literal characters `continue\n` (no Enter)
-- ✗ `"input": "continue\\r\\n"` — double-escaped, sends literal `\r\n` characters
+Enter/newline is automatically appended with the correct line ending for the session type — just send the command text.
 
-When in doubt, use bytes: `{"bytes": [99, 111, 110, 116, 105, 110, 117, 101, 13, 10]}`
+When in doubt about special characters, use bytes: `{"bytes": [99, 111, 110, 116, 105, 110, 117, 101, 13, 10]}`
 where 13=carriage return, 10=newline.
 
 ## Interrupting execution
@@ -47,6 +43,6 @@ Then `read_output` to see where it stopped.
 
 ## Exiting GDB
 ```json
-{"session_id": "...", "input": "quit\n", "await_response_ms": 1000}
+{"session_id": "...", "input": "quit", "await_response_ms": 1000}
 ```
-If GDB asks for confirmation, send `y\n`.
+If GDB asks for confirmation, send `y`.

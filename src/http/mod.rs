@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::util::{ansi_to_html, reap_session, remove_session, strip_ansi};
+use crate::util::{ansi_to_html, normalize_pty_output, reap_session, remove_session, strip_ansi};
 use crate::{ProcessHandle, Sessions};
 
 pub async fn serve(sessions: Sessions) {
@@ -36,7 +36,7 @@ pub async fn serve(sessions: Sessions) {
         )
         .with_state(sessions);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8089));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8089));
     if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
         axum::serve(listener, app).await.ok();
     }
@@ -53,7 +53,8 @@ async fn http_index(State(sessions): State<Sessions>) -> Html<String> {
     } else {
         html.push_str("<ul>");
         for (id, session) in sessions.iter_mut() {
-            let running = reap_session(session).is_none();
+            reap_session(session);
+            let running = session.process.is_some();
             let status = if running {
                 "running".to_string()
             } else {
@@ -137,15 +138,18 @@ fn format_output(content: &str, id: &str, stream: &str, _params: &HashMap<String
         "<a href=\"/\">Back</a> | <a href=\"/session/{id}/{stream}?raw=1\">Raw</a> | <a href=\"/session/{id}/{stream}?strip=1\">Strip</a>"
     );
 
+    // Normalize PTY line endings before further processing
+    let content = normalize_pty_output(content);
+
     let content = if _params.contains_key("raw") {
         // Keep ANSI codes as-is, but HTML-escape
-        html_escape(content)
+        html_escape(&content)
     } else if _params.contains_key("strip") {
         // Strip ANSI codes, plain text
-        strip_ansi(content)
+        strip_ansi(&content)
     } else {
         // Default: convert ANSI to HTML
-        ansi_to_html(content)
+        ansi_to_html(&content)
     };
 
     (content, mode_links)
@@ -202,14 +206,14 @@ async fn http_input_submit(
     Path(id): Path<String>,
     Form(form): Form<InputForm>,
 ) -> Response {
-    let input = format!("{}\r\n", form.input);
-
-    let pty_writer = {
+    let (input, pty_writer) = {
         let mut sessions = sessions.lock().unwrap();
         let Some(session) = sessions.get_mut(&id) else {
             return Html("Session not found".to_string()).into_response();
         };
-        match session.process {
+        let line_ending = if session.is_pty { "\r\n" } else { "\n" };
+        let input = format!("{}{}", form.input.trim_end(), line_ending);
+        let writer = match session.process {
             Some(ProcessHandle::Pty { ref pty_writer, .. }) => Some(pty_writer.clone()),
             Some(ProcessHandle::Pipe(ref mut child)) => {
                 if let Some(ref mut stdin) = child.stdin {
@@ -220,7 +224,8 @@ async fn http_input_submit(
                 None
             }
             None => return Html("Process not running".to_string()).into_response(),
-        }
+        };
+        (input, writer)
     };
 
     if let Some(writer) = pty_writer {
@@ -241,18 +246,18 @@ async fn http_stdout_stream(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let (stdout_path, session_pos) = {
+    let stdout_path = {
         let sessions = sessions.lock().unwrap();
         match sessions.get(&id) {
-            Some(s) => (s.stdout_path.clone(), s.stdout_pos),
+            Some(s) => s.stdout_path.clone(),
             None => return Html("Session not found".to_string()).into_response(),
         }
     };
 
-    // Use Last-Event-ID header if present, then ?from= param, then session position
-    let initial_pos = parse_last_event_id(&headers)
+    // Use Last-Event-ID header if present, then ?from= param, default 0 (all lines)
+    let initial_lines_seen = parse_last_event_id(&headers)
         .or_else(|| params.get("from").and_then(|v| v.parse().ok()))
-        .unwrap_or(session_pos);
+        .unwrap_or(0);
 
     // Mode: default (html), ?raw=1 (keep ansi), ?strip=1 (plain text)
     let mode = if params.contains_key("raw") {
@@ -262,7 +267,7 @@ async fn http_stdout_stream(
     } else {
         "html".to_string()
     };
-    let stream = create_log_stream(sessions, id, stdout_path, initial_pos, mode);
+    let stream = create_log_stream(sessions, id, stdout_path, initial_lines_seen, mode);
     Sse::new(stream).into_response()
 }
 
@@ -273,21 +278,21 @@ async fn http_stderr_stream(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let (stderr_path, session_pos) = {
+    let stderr_path = {
         let sessions = sessions.lock().unwrap();
         match sessions.get(&id) {
             Some(s) => match &s.stderr_path {
-                Some(p) => (p.clone(), s.stderr_pos),
+                Some(p) => p.clone(),
                 None => return Html("stderr not split".to_string()).into_response(),
             },
             None => return Html("Session not found".to_string()).into_response(),
         }
     };
 
-    // Use Last-Event-ID header if present, then ?from= param, then session position
-    let initial_pos = parse_last_event_id(&headers)
+    // Use Last-Event-ID header if present, then ?from= param, default 0 (all lines)
+    let initial_lines_seen = parse_last_event_id(&headers)
         .or_else(|| params.get("from").and_then(|v| v.parse().ok()))
-        .unwrap_or(session_pos);
+        .unwrap_or(0);
 
     // Mode: default (html), ?raw=1 (keep ansi), ?strip=1 (plain text)
     let mode = if params.contains_key("raw") {
@@ -297,7 +302,7 @@ async fn http_stderr_stream(
     } else {
         "html".to_string()
     };
-    let stream = create_log_stream(sessions, id, stderr_path, initial_pos, mode);
+    let stream = create_log_stream(sessions, id, stderr_path, initial_lines_seen, mode);
     Sse::new(stream).into_response()
 }
 
@@ -370,10 +375,10 @@ fn create_log_stream(
     sessions: Sessions,
     session_id: String,
     log_path: String,
-    initial_pos: u64,
+    initial_lines_seen: u64,
     mode: String,
 ) -> impl Stream<Item = Result<axum::response::sse::Event, axum::Error>> {
-    let pos = Arc::new(AtomicU64::new(initial_pos));
+    let lines_seen = Arc::new(AtomicU64::new(initial_lines_seen));
 
     async_stream::stream! {
         loop {
@@ -386,52 +391,47 @@ fn create_log_stream(
                 }
             };
 
-            // Read new content from current position
-            let current_pos = pos.load(Ordering::Relaxed);
-            match read_lines_from_position(&log_path, current_pos) {
-                Ok((lines, new_pos)) => {
-                    for line in lines {
+            // Read new complete lines
+            let current = lines_seen.load(Ordering::Relaxed);
+            match read_complete_lines(&log_path, current) {
+                Ok(lines) => {
+                    for (line_num, line) in lines {
                         let line = match mode.as_str() {
                             "raw" => line,
                             "strip" => strip_ansi(&line),
                             _ => ansi_to_html(&line),
                         };
-                        let id = pos.load(Ordering::Relaxed);
                         yield Ok(axum::response::sse::Event::default()
-                            .id(id.to_string())
+                            .id(line_num.to_string())
                             .data(&line));
+                        lines_seen.store(line_num, Ordering::Relaxed);
                     }
-                    pos.store(new_pos, Ordering::Relaxed);
                 }
                 Err(_) => break,
             }
 
-            // If process exited and no new data, we're done
+            // If process exited, do one final read then send done
             if !running {
-                let current_pos = pos.load(Ordering::Relaxed);
-                match read_lines_from_position(&log_path, current_pos) {
-                    Ok((lines, new_pos)) => {
-                        if lines.is_empty() {
-                            yield Ok(axum::response::sse::Event::default()
-                                .event("done")
-                                .data("[process exited]"));
-                            break;
-                        }
-                        for line in lines {
+                let current = lines_seen.load(Ordering::Relaxed);
+                match read_complete_lines(&log_path, current) {
+                    Ok(lines) => {
+                        for (line_num, line) in &lines {
                             let line = match mode.as_str() {
-                                "raw" => line,
-                                "strip" => strip_ansi(&line),
-                                _ => ansi_to_html(&line),
+                                "raw" => line.clone(),
+                                "strip" => strip_ansi(line),
+                                _ => ansi_to_html(line),
                             };
-                            let id = pos.load(Ordering::Relaxed);
                             yield Ok(axum::response::sse::Event::default()
-                                .id(id.to_string())
+                                .id(line_num.to_string())
                                 .data(&line));
+                            lines_seen.store(*line_num, Ordering::Relaxed);
                         }
-                        pos.store(new_pos, Ordering::Relaxed);
                     }
-                    Err(_) => break,
+                    Err(_) => {}
                 }
+                yield Ok(axum::response::sse::Event::default()
+                    .event("done")
+                    .data("[process exited]"));
                 break;
             }
 
@@ -440,25 +440,33 @@ fn create_log_stream(
     }
 }
 
-fn read_lines_from_position(path: &str, pos: u64) -> Result<(Vec<String>, u64), String> {
-    use std::io::{Read, Seek};
+/// Read complete lines from a log file, starting after `lines_seen` (0 = start from beginning).
+/// Returns only newline-terminated lines (partial trailing data is withheld).
+/// Each returned line is paired with its 1-based line number.
+fn read_complete_lines(path: &str, lines_seen: u64) -> Result<Vec<(u64, String)>, String> {
+    use std::io::Read;
 
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let file_size = file.metadata().map_err(|e| e.to_string())?.len();
-
-    if pos >= file_size {
-        return Ok((Vec::new(), pos));
-    }
-
-    file.seek(std::io::SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
     let mut data = Vec::new();
     file.read_to_end(&mut data).map_err(|e| e.to_string())?;
 
     let content = String::from_utf8_lossy(&data);
-    let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
 
-    // Calculate new position: each line includes its content + newline
-    let new_pos = pos + content.len() as u64;
+    // Only consider content up to the last newline (discard partial trailing line)
+    let complete = match content.rfind('\n') {
+        Some(pos) => &content[..pos + 1],
+        None => return Ok(Vec::new()), // No complete lines yet
+    };
 
-    Ok((lines, new_pos))
+    let mut result = Vec::new();
+    for (i, line) in complete.split_terminator('\n').enumerate() {
+        let line_num = (i as u64) + 1;
+        if line_num > lines_seen {
+            // Normalize PTY output: handle \r line overwrites and strip trailing \r
+            let line = normalize_pty_output(line.trim_end_matches('\r'));
+            result.push((line_num, line));
+        }
+    }
+
+    Ok(result)
 }

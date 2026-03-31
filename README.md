@@ -9,10 +9,12 @@ In which I vibe code an Model Context Protocol (MCP) server that wraps long-runn
 - **Incremental output reading**: Only returns new output since last read
 - **Flexible stderr handling**: Combine stderr with stdout or keep them separate
 - **Auto-cleanup**: Sessions automatically cleaned up when process exits and all output is consumed
-- **HTTP monitoring**: Web interface on port 8089 to view active sessions and their output
+- **HTTP monitoring**: Web interface on localhost:8089 to view active sessions and their output
 - **Raw byte input**: Send control characters (Ctrl-A, Ctrl-X, etc.) via byte arrays
 - **Response awaiting**: Block after sending input and collect output until idle
 - **MCP elicitation**: Prompt users directly for passwords/secrets without exposing them to the LLM
+- **MCP logging**: Opt-in real-time log streaming of process output via MCP logging notifications (line-buffered, ANSI-stripped)
+- **MCP progress**: Progress notifications during `await_response_ms` blocking (when client provides a progress token)
 - **MCP prompts**: Built-in guides for picocom, GDB, and Black Magic Probe workflows
 
 ## Installation
@@ -99,6 +101,7 @@ Start a new command session.
 - `args` (array of strings, optional): Command arguments
 - `split_stderr` (boolean, optional): If true, keep stderr separate from stdout (default: false)
 - `use_pty` (boolean, optional): Spawn inside a pseudo-terminal (required for interactive programs like picocom, gdb TUI, etc.)
+- `stream_log` (boolean, optional): Stream process output to the client log in real-time via MCP logging notifications. Stdout lines are sent at `info` level, stderr at `warning` level. The logger name is `session/{id}/stdout` or `session/{id}/stderr`. Default: false.
 
 **Returns:** Session ID
 
@@ -116,28 +119,25 @@ Send input to a running command's stdin. Supports text, raw bytes, and MCP elici
 
 **Parameters:**
 - `session_id` (string, required): Session ID
-- `input` (string, optional): Text input to send as UTF-8
-- `bytes` (array of u8, optional): Raw bytes to send (e.g. `[1, 24]` for Ctrl-A Ctrl-X)
-- `elicit` (boolean, optional): If true, prompt the user directly via MCP elicitation (password never touches the LLM)
+- `input` (string, optional): Text to send. Enter/newline is automatically appended with the correct line ending for the session type (pipe vs PTY). Trailing whitespace is trimmed before Enter is appended.
+- `bytes` (array of u8, optional): Raw bytes to send (e.g. `[1, 24]` for Ctrl-A Ctrl-X). No automatic Enter is appended.
+- `no_enter` (boolean, optional): If true, send text exactly as-is without appending Enter. Use for partial input, tab completion, etc.
+- `elicit` (boolean, optional): If true, prompt the user directly via MCP elicitation (password never touches the LLM). Enter is auto-appended.
 - `elicit_message` (string, optional): Custom prompt message for elicitation
 - `await_response_ms` (u64, optional): Block and collect output until no new data arrives for this many ms
 
 At least one of `input`, `bytes`, or `elicit: true` must be provided. If `input` is present it takes priority over `bytes`. `await_response_ms` composes with any input mode.
 
-**Important: Newlines**
-Include `\n` in the JSON string to send a newline (Enter key). Do NOT double-escape:
-- ✓ `"input": "ls\n"` — correct, sends `ls` followed by Enter
-- ✗ `"input": "ls\\n"` — wrong, sends literal characters `ls\n` (no Enter)
+When `await_response_ms` is active and the client provides a `_meta.progressToken` in the request, progress notifications are sent every second with elapsed time and bytes collected.
 
-When in doubt, use the `bytes` parameter with byte 10 (newline):
-```json
-{"session_id": "1", "bytes": [108, 115, 10]}
-```
-This sends `l`, `s`, then newline, eliminating escape confusion.
+**Auto-Enter behavior:**
+When using `input`, Enter is automatically appended — just send the command text. The correct line ending is chosen based on session type (`\n` for pipe, `\r\n` for PTY). Any trailing whitespace (including `\n` or `\r\n` you may have added) is trimmed first, so `"ls"`, `"ls\n"`, and `"ls\r\n"` all behave identically.
+
+To suppress auto-Enter, set `no_enter: true`. The `bytes` parameter never auto-appends Enter.
 
 **Examples:**
 ```json
-{"session_id": "1", "input": "print('hello')\n", "await_response_ms": 1000}
+{"session_id": "1", "input": "print('hello')", "await_response_ms": 1000}
 ```
 ```json
 {"session_id": "1", "bytes": [1, 24]}
@@ -195,14 +195,19 @@ Get status of a command session.
 
 ### HTTP Endpoints
 
-The MCP runner provides an HTTP interface on port 8089 for monitoring sessions:
+The MCP runner provides an HTTP interface on localhost:8089 for monitoring sessions:
 
 - `GET /` — List all sessions with status and links
 - `GET /session/{id}/stdout` — View current stdout content
 - `GET /session/{id}/stderr` — View current stderr content
 - `GET /session/{id}/stdout/stream` — SSE stream of stdout (like `tail -f`)
 - `GET /session/{id}/stderr/stream` — SSE stream of stderr (like `tail -f`)
-- `POST /session/{id}/input` — Send input to the process
+- `GET /session/{id}/stdout/follow` — Live HTML page with auto-scrolling SSE output
+- `GET /session/{id}/stderr/follow` — Live HTML page with auto-scrolling SSE output
+- `GET /session/{id}/input` — HTML form to send text input to the process
+- `POST /session/{id}/input` — Submit text input to the process
+- `GET /session/{id}/password` — HTML form to send password input (masked field)
+- `POST /session/{id}/password` — Submit password input to the process
 - `DELETE /session/{id}` — Delete a session
 
 #### ANSI Escape Code Handling
@@ -220,30 +225,32 @@ Examples:
 - `GET /session/1/stdout?raw=1` — Raw output with ANSI codes
 - `GET /session/1/stdout?strip=1` — Plain text without ANSI
 
-For SSE streams, the default is stripped (clean data). Use `?raw=1` to keep ANSI codes:
-- `GET /session/1/stdout/stream` — Stripped output
+For SSE streams, the default converts ANSI to HTML. Use `?raw=1` to keep ANSI codes or `?strip=1` for plain text:
+- `GET /session/1/stdout/stream` — HTML-converted output
 - `GET /session/1/stdout/stream?raw=1` — Raw output with ANSI codes
+- `GET /session/1/stdout/stream?strip=1` — Plain text without ANSI
 
 #### SSE Streaming
 
 The `/session/{id}/stdout/stream` and `/session/{id}/stderr/stream` endpoints use Server-Sent Events (SSE) to stream output in real-time:
 
 ```
-id: 42
+id: 1
 data: Hello, world!
 
-id: 58
+id: 2
 data: Another line
 
 event: done
 data: [process exited]
 ```
 
-- Each event has an `id` field containing the byte offset (useful for resume)
-- The `data` field contains one line of output
+- Each event has an `id` field containing the 1-based line number (matches editor line numbering)
+- The `data` field contains one complete line of output
+- Partial lines (not yet terminated by a newline) are withheld until complete
 - When the process exits, a final `event: done` message is sent
 
-**Resume from last position:** Include `Last-Event-ID` header with the byte offset to resume from:
+**Resume from last line:** Include `Last-Event-ID` header with the last line number received:
 ```bash
 curl -H "Last-Event-ID: 42" http://localhost:8089/session/1/stdout/stream
 ```
@@ -251,7 +258,7 @@ curl -H "Last-Event-ID: 42" http://localhost:8089/session/1/stdout/stream
 **JavaScript example:**
 ```javascript
 const source = new EventSource('/session/1/stdout/stream');
-source.onmessage = (e) => console.log(e.data);
+source.onmessage = (e) => console.log(`Line ${e.lastEventId}: ${e.data}`);
 source.addEventListener('done', () => source.close());
 ```
 
@@ -307,8 +314,8 @@ Guide for on-device debugging with Black Magic Probe. Covers probe discovery, co
 - [x] **HTTP Streaming**: SSE endpoints for real-time stdout/stderr streaming (`/session/{id}/stdout/stream`, `/session/{id}/stderr/stream`)
 - [x] **HTTP Follow Pages**: Live HTML pages that display SSE streams (`/session/{id}/stdout/follow`, `/session/{id}/stderr/follow`)
 - [x] **MCP Resources**: Expose session stdout/stderr as subscribable MCP resources (`session://1/stdout`). Push updates via `notify_resource_updated`.
-- [ ] **MCP Logging Notifications**: Stream process output to the client log in real-time via `notify_logging_message`, so agents can passively watch long-running builds or servers without calling `read_output`.
-- [ ] **Progress Notifications**: Send `notify_progress` updates while `await_response_ms` is blocking, so clients can show elapsed time or parsed build progress.
+- [x] **MCP Logging Notifications**: Stream process output to the client log in real-time via `notify_logging_message`, so agents can passively watch long-running builds or servers without calling `read_output`.
+- [x] **Progress Notifications**: Send `notify_progress` updates while `await_response_ms` is blocking, so clients can show elapsed time or parsed build progress.
 
 ## License
 

@@ -10,8 +10,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::util::{
-    err, exit_code_from_status, pipe_to_file, pty_pipe_to_file, read_from_position,
-    reap_session, remove_session, strip_ansi, text_result,
+    err, exit_code_from_status, normalize_pty_output, pipe_to_file, pty_pipe_to_file,
+    read_from_position, reap_session, remove_session, strip_ansi, text_result,
 };
 use crate::{
     ElicitedInput, ProcessHandle, ReadOutputArgs, Runner, SendInputArgs, SendSignalArgs, Session,
@@ -31,6 +31,7 @@ impl Runner {
     ) -> Result<CallToolResult, McpError> {
         let split_stderr = args.split_stderr.unwrap_or(false);
         let use_pty = args.use_pty.unwrap_or(false);
+        let stream_log = args.stream_log.unwrap_or(false);
         let cmd_args = args.args.unwrap_or_default();
 
         let session_id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
@@ -55,6 +56,31 @@ impl Runner {
             .get()
             .map(|p| (p.clone(), format!("session://{session_id}/stderr")));
 
+        let stdout_log = if stream_log {
+            self.peer.get().map(|p| {
+                (
+                    p.clone(),
+                    format!("session/{session_id}/stdout"),
+                    LoggingLevel::Info,
+                    self.log_level.clone(),
+                )
+            })
+        } else {
+            None
+        };
+        let stderr_log = if stream_log {
+            self.peer.get().map(|p| {
+                (
+                    p.clone(),
+                    format!("session/{session_id}/stderr"),
+                    LoggingLevel::Warning,
+                    self.log_level.clone(),
+                )
+            })
+        } else {
+            None
+        };
+
         let process = if use_pty {
             let (pty, pts) = pty_process::open().map_err(|e| err(e.to_string()))?;
             pty.resize(pty_process::Size::new(24, 80))
@@ -68,7 +94,7 @@ impl Runner {
             let (read_pty, write_pty) = pty.into_split();
             let stdout_path_clone = stdout_path.clone();
             tokio::spawn(async move {
-                pty_pipe_to_file(read_pty, stdout_path_clone, stdout_notify).await
+                pty_pipe_to_file(read_pty, stdout_path_clone, stdout_notify, stdout_log).await
             });
 
             let pty_writer = Arc::new(tokio::sync::Mutex::new(write_pty));
@@ -77,27 +103,30 @@ impl Runner {
             let mut cmd = Command::new(&args.command);
             cmd.args(&cmd_args)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped());
-
-            if split_stderr {
-                cmd.stderr(Stdio::piped());
-            } else {
-                cmd.stderr(Stdio::inherit());
-            }
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
 
             let mut child = cmd.spawn().map_err(|e| err(e.to_string()))?;
 
             let stdout = child.stdout.take().unwrap();
-            let stderr = child.stderr.take();
+            let stderr = child.stderr.take().unwrap();
 
             let stdout_path_clone = stdout_path.clone();
-            tokio::spawn(
-                async move { pipe_to_file(stdout, stdout_path_clone, stdout_notify).await },
-            );
+            tokio::spawn(async move {
+                pipe_to_file(stdout, stdout_path_clone, stdout_notify, stdout_log).await
+            });
 
-            if let Some(stderr) = stderr {
+            if split_stderr {
                 let p = stderr_path.clone().unwrap();
-                tokio::spawn(async move { pipe_to_file(stderr, p, stderr_notify).await });
+                tokio::spawn(
+                    async move { pipe_to_file(stderr, p, stderr_notify, stderr_log).await },
+                );
+            } else {
+                // Merge stderr into stdout log file
+                let stdout_path_for_stderr = stdout_path.clone();
+                tokio::spawn(async move {
+                    pipe_to_file(stderr, stdout_path_for_stderr, stderr_notify, stderr_log).await
+                });
             }
 
             ProcessHandle::Pipe(child)
@@ -107,11 +136,13 @@ impl Runner {
             session_id.clone(),
             Session {
                 process: Some(process),
+                is_pty: use_pty,
                 stdout_path,
                 stderr_path,
                 stdout_pos: 0,
                 stderr_pos: 0,
                 exit_code: None,
+                stream_log,
             },
         );
 
@@ -146,17 +177,7 @@ impl Runner {
                 let status = child.wait().await.map_err(|e| err(e.to_string()))?;
                 let mut sessions = self.sessions.lock().unwrap();
                 if let Some(session) = sessions.get_mut(&args.session_id) {
-                    session.exit_code = status.code().or_else(|| {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::process::ExitStatusExt;
-                            status.signal().map(|s| 128 + s)
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            None
-                        }
-                    });
+                    session.exit_code = exit_code_from_status(status);
                 }
             }
             None => {}
@@ -185,13 +206,25 @@ impl Runner {
     }
 
     #[tool(
-        description = "Send input to a running command's stdin.\n\nRECOMMENDED: Use await_response_ms to send input AND get output in one call:\n{\"session_id\": \"1\", \"input\": \"command\\r\\n\", \"await_response_ms\": 500}\nThis waits up to 500ms for output after sending, then returns both confirmation and response.\n\nHOW TO SEND ENTER/NEWLINE:\n- In JSON, use a SINGLE backslash: {\"input\": \"command\\n\"}\n- WRONG: {\"input\": \"command\\\\n\"} sends literal characters 'command\\n' (no Enter)\n- For PTY sessions (gdb, picocom), you may need \\r\\n: {\"input\": \"command\\r\\n\"}\n- When in doubt, use bytes: {\"bytes\": [..., 13, 10]} where 13=CR, 10=newline\n\nFor control characters: [1,24]=Ctrl-A Ctrl-X, [10]=newline, [13]=carriage return."
+        description = "Send input to a running command's stdin.\n\nAUTO-ENTER: When using 'input', Enter (newline) is AUTOMATICALLY appended with the correct line ending for the session type. Just send the command text:\n  {\"session_id\": \"1\", \"input\": \"ls\"}\n  {\"session_id\": \"1\", \"input\": \"print('hello')\"}\nDo NOT add \\n or \\r\\n yourself — it is handled for you. Any trailing whitespace on 'input' is trimmed before Enter is appended.\n\nTo send text WITHOUT Enter (partial input, tab completion), set no_enter: true:\n  {\"session_id\": \"1\", \"input\": \"partial\", \"no_enter\": true}\n\nRECOMMENDED: Use await_response_ms to send input AND get output in one call:\n  {\"session_id\": \"1\", \"input\": \"help\", \"await_response_ms\": 500}\n\nFor control characters, use 'bytes' (no auto-Enter): {\"bytes\": [1, 24]} for Ctrl-A Ctrl-X."
     )]
     async fn send_input(
         &self,
         Parameters(args): Parameters<SendInputArgs>,
         peer: Peer<RoleServer>,
+        meta: Meta,
     ) -> Result<CallToolResult, McpError> {
+        // Determine if session is PTY (needed for correct line ending)
+        let is_pty = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions
+                .get(&args.session_id)
+                .ok_or_else(|| err("Session not found"))?;
+            session.is_pty
+        };
+        let no_enter = args.no_enter.unwrap_or(false);
+        let line_ending: &[u8] = if is_pty { b"\r\n" } else { b"\n" };
+
         let data = if args.elicit.unwrap_or(false) {
             let msg = args
                 .elicit_message
@@ -199,8 +232,8 @@ impl Runner {
                 .unwrap_or("Enter input for process");
             match peer.elicit::<ElicitedInput>(msg).await {
                 Ok(Some(elicited)) => {
-                    let mut bytes = elicited.input.into_bytes();
-                    bytes.push(b'\n');
+                    let mut bytes = elicited.input.trim_end().as_bytes().to_vec();
+                    bytes.extend_from_slice(line_ending);
                     bytes
                 }
                 Ok(None) => return Err(err("User provided no input")),
@@ -213,7 +246,13 @@ impl Runner {
             }
         } else {
             match (args.input, args.bytes) {
-                (Some(text), _) => text.into_bytes(),
+                (Some(text), _) => {
+                    let mut bytes = text.trim_end().as_bytes().to_vec();
+                    if !no_enter {
+                        bytes.extend_from_slice(line_ending);
+                    }
+                    bytes
+                }
                 (None, Some(bytes)) => bytes,
                 (None, None) => return Err(err("Provide 'input', 'bytes', or set 'elicit: true'")),
             }
@@ -247,12 +286,17 @@ impl Runner {
             w.flush().await.map_err(|e| err(e.to_string()))?;
         }
 
-        if let Some(timeout_ms) = args.await_response_ms {
-            let timeout = std::time::Duration::from_millis(timeout_ms);
+        if let Some(idle_ms) = args.await_response_ms {
+            let idle_timeout = std::time::Duration::from_millis(idle_ms);
+            let poll_interval = std::time::Duration::from_millis(50);
             let mut collected = String::new();
+            let mut idle_since = tokio::time::Instant::now();
+            let start_time = tokio::time::Instant::now();
+            let progress_token = meta.get_progress_token();
+            let mut last_progress = tokio::time::Instant::now();
 
             loop {
-                tokio::time::sleep(timeout).await;
+                tokio::time::sleep(poll_interval).await;
 
                 let (data, new_pos) = {
                     let sessions = self.sessions.lock().unwrap();
@@ -263,14 +307,34 @@ impl Runner {
                 };
 
                 if data.is_empty() {
-                    break;
-                }
-
-                collected.push_str(&data);
-                {
+                    if idle_since.elapsed() >= idle_timeout {
+                        break;
+                    }
+                } else {
+                    collected.push_str(&data);
+                    idle_since = tokio::time::Instant::now();
                     let mut sessions = self.sessions.lock().unwrap();
                     if let Some(s) = sessions.get_mut(&args.session_id) {
                         s.stdout_pos = new_pos;
+                    }
+                }
+
+                if let Some(ref token) = progress_token {
+                    if last_progress.elapsed() >= std::time::Duration::from_secs(1) {
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        peer.notify_progress(ProgressNotificationParam {
+                            progress_token: token.clone(),
+                            progress: elapsed,
+                            total: None,
+                            message: Some(format!(
+                                "Awaiting response... {:.1}s elapsed, {} bytes collected",
+                                elapsed,
+                                collected.len()
+                            )),
+                        })
+                        .await
+                        .ok();
+                        last_progress = tokio::time::Instant::now();
                     }
                 }
             }
@@ -278,7 +342,8 @@ impl Runner {
             if collected.is_empty() {
                 return text_result("Input sent (no response)");
             }
-            return text_result(collected);
+            let collected = normalize_pty_output(&collected);
+            return text_result(strip_ansi(&collected));
         }
 
         text_result("Input sent")
@@ -305,23 +370,24 @@ impl Runner {
                 _ => return Err(err(format!("Unsupported signal: {}", args.signal))),
             };
 
-            let mut sessions = self.sessions.lock().unwrap();
-            let session = sessions
-                .get_mut(&args.session_id)
-                .ok_or_else(|| err("Session not found"))?;
+            let pid = {
+                let mut sessions = self.sessions.lock().unwrap();
+                let session = sessions
+                    .get_mut(&args.session_id)
+                    .ok_or_else(|| err("Session not found"))?;
 
-            let pid = match session.process {
-                Some(ProcessHandle::Pipe(ref child)) => child.id() as i32,
-                Some(ProcessHandle::Pty { ref child, .. }) => {
-                    child.id().ok_or_else(|| err("Process already exited"))? as i32
+                match session.process {
+                    Some(ProcessHandle::Pipe(ref child)) => child.id() as i32,
+                    Some(ProcessHandle::Pty { ref child, .. }) => {
+                        child.id().ok_or_else(|| err("Process already exited"))? as i32
+                    }
+                    None => return Err(err("Process not running")),
                 }
-                None => return Err(err("Process not running")),
             };
 
             signal::kill(Pid::from_raw(pid), signal_type).map_err(|e| err(e.to_string()))?;
 
-            drop(sessions);
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let mut sessions = self.sessions.lock().unwrap();
             if let Some(session) = sessions.get_mut(&args.session_id) {
                 match session.process {
@@ -333,17 +399,7 @@ impl Runner {
                     }
                     Some(ProcessHandle::Pty { ref mut child, .. }) => {
                         if let Ok(Some(status)) = child.try_wait() {
-                            session.exit_code = status.code().or_else(|| {
-                                #[cfg(unix)]
-                                {
-                                    use std::os::unix::process::ExitStatusExt;
-                                    status.signal().map(|s| 128 + s)
-                                }
-                                #[cfg(not(unix))]
-                                {
-                                    None
-                                }
-                            });
+                            session.exit_code = exit_code_from_status(status);
                             session.process = None;
                         }
                     }
@@ -384,6 +440,7 @@ impl Runner {
             reap_session(s)
         };
 
+        let data = normalize_pty_output(&data);
         let mut result = if args.strip_ansi {
             strip_ansi(&data)
         } else {
@@ -423,6 +480,7 @@ impl Runner {
             reap_session(s)
         };
 
+        let data = normalize_pty_output(&data);
         let mut result = if args.strip_ansi {
             strip_ansi(&data)
         } else {
@@ -443,7 +501,8 @@ impl Runner {
         let session = sessions
             .get_mut(&args.session_id)
             .ok_or_else(|| err("Session not found"))?;
-        let running = reap_session(session).is_none();
+        reap_session(session);
+        let running = session.process.is_some();
         text_result(format!(
             "Running: {}, Exit code: {:?}",
             running, session.exit_code

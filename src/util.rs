@@ -213,11 +213,13 @@ pub async fn pty_pipe_to_file(
                     f.flush().ok();
                 }
                 if let Some((ref peer, ref uri)) = notify {
-                    peer.notify_resource_updated(ResourceUpdatedNotificationParam {
-                        uri: uri.clone(),
-                    })
-                    .await
-                    .ok();
+                    let peer = peer.clone();
+                    let uri = uri.clone();
+                    tokio::spawn(async move {
+                        peer.notify_resource_updated(ResourceUpdatedNotificationParam { uri })
+                            .await
+                            .ok();
+                    });
                 }
                 if log.is_some() {
                     line_buf.extend_from_slice(&buf[..n]);
@@ -296,8 +298,8 @@ pub fn remove_session(session_id: &str, sessions: &mut HashMap<String, Session>)
     }
 }
 
-pub fn cleanup_all_sessions(sessions: &crate::Sessions) {
-    for (_, mut session) in sessions.lock().unwrap().drain() {
+pub async fn cleanup_all_sessions(sessions: &crate::Sessions) {
+    for (_, mut session) in sessions.lock().await.drain() {
         match session.process.take() {
             Some(ProcessHandle::Pipe(mut child)) => {
                 child.kill().ok();

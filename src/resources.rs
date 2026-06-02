@@ -37,7 +37,7 @@ impl Runner {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock().await;
         let mut resources = Vec::new();
 
         for (id, session) in sessions.iter() {
@@ -81,7 +81,7 @@ impl Runner {
         })?;
 
         let path = {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.lock().await;
             let session = sessions.get(id).ok_or_else(|| {
                 McpError::resource_not_found(format!("Session not found: {id}"), None)
             })?;

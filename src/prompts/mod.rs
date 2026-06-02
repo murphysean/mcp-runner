@@ -1,13 +1,8 @@
-use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::{model::*, prompt, prompt_router, ErrorData as McpError};
 
 use crate::Runner;
 
-pub fn router() -> PromptRouter<Runner> {
-    Runner::prompt_router()
-}
-
-#[prompt_router]
+#[prompt_router(vis = "pub")]
 impl Runner {
     #[prompt(
         description = "Guide for using picocom serial terminal. Covers connecting to a device, reading output, and exiting gracefully with raw byte control sequences."
@@ -36,6 +31,36 @@ impl Runner {
         Ok(vec![PromptMessage::new_text(
             PromptMessageRole::User,
             include_str!("blackmagic_probe_guide.md"),
+        )])
+    }
+
+    #[prompt(
+        description = "Guide for running builds and tests. Covers using wait_for to detect completion, search_output for errors, timeout_seconds for bounded execution, and multi-step build workflows."
+    )]
+    async fn build_test_guide(&self) -> Result<Vec<PromptMessage>, McpError> {
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            include_str!("build_test_guide.md"),
+        )])
+    }
+
+    #[prompt(
+        description = "Guide for running and monitoring development servers. Covers waiting for ready state, log monitoring, restart patterns, and running multiple services."
+    )]
+    async fn dev_server_guide(&self) -> Result<Vec<PromptMessage>, McpError> {
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            include_str!("dev_server_guide.md"),
+        )])
+    }
+
+    #[prompt(
+        description = "Guide for SSH sessions, remote commands, secure password entry via elicitation, tunnels, and file transfers."
+    )]
+    async fn ssh_guide(&self) -> Result<Vec<PromptMessage>, McpError> {
+        Ok(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            include_str!("ssh_guide.md"),
         )])
     }
 }

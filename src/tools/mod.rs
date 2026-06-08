@@ -19,7 +19,9 @@ use crate::{
 
 #[tool_router(vis = "pub")]
 impl Runner {
-    #[tool(description = "Start a new command session. Returns a session_id for use with other tools.\n\nIMPORTANT about use_pty:\n- Set use_pty: true ONLY for programs that need terminal features (picocom, gdb TUI, serial consoles, text editors).\n- For simple commands (python scripts, builds, tests), use_pty: false (default) gives cleaner output with proper newlines.\n- PTY output contains ANSI cursor positioning codes that look messy when stripped. For simple commands, avoid PTY.\n\nUse split_stderr: true to capture stderr separately.")]
+    #[tool(
+        description = "Start a new command session. Returns a session_id for use with other tools.\n\nIMPORTANT about use_pty:\n- Set use_pty: true ONLY for programs that need terminal features (picocom, gdb TUI, serial consoles, text editors).\n- For simple commands (python scripts, builds, tests), use_pty: false (default) gives cleaner output with proper newlines.\n- PTY output contains ANSI cursor positioning codes that look messy when stripped. For simple commands, avoid PTY.\n\nUse split_stderr: true to capture stderr separately."
+    )]
     async fn start_command(
         &self,
         Parameters(args): Parameters<StartCommandArgs>,
@@ -90,9 +92,7 @@ impl Runner {
                     cmd = cmd.env(k, v);
                 }
             }
-            let child = cmd
-                .spawn(pts)
-                .map_err(|e| err(e.to_string()))?;
+            let child = cmd.spawn(pts).map_err(|e| err(e.to_string()))?;
 
             let (read_pty, write_pty) = pty.into_split();
             let stdout_path_clone = stdout_path.clone();
@@ -172,7 +172,9 @@ impl Runner {
                 tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)).await;
                 let process = {
                     let mut sessions = sessions.lock().await;
-                    let Some(session) = sessions.get_mut(&sid) else { return };
+                    let Some(session) = sessions.get_mut(&sid) else {
+                        return;
+                    };
                     session.process.take()
                 };
                 match process {
@@ -223,7 +225,9 @@ impl Runner {
         ))
     }
 
-    #[tool(description = "Run a command to completion and return its full output + exit code. Blocks until the process exits (or timeout). Use this for commands that produce a result and exit: builds, tests, scripts, one-shot CLI tools. For long-running processes (servers, REPLs, debuggers), use start_command instead.\n\nDefault timeout: 300s (5 minutes). Set timeout_seconds for longer builds.")]
+    #[tool(
+        description = "Run a command to completion and return its full output + exit code. Blocks until the process exits (or timeout). Use this for commands that produce a result and exit: builds, tests, scripts, one-shot CLI tools. For long-running processes (servers, REPLs, debuggers), use start_command instead.\n\nDefault timeout: 300s (5 minutes). Set timeout_seconds for longer builds."
+    )]
     async fn run_command(
         &self,
         Parameters(args): Parameters<crate::RunCommandArgs>,
@@ -260,18 +264,15 @@ impl Runner {
             buf
         });
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            async {
-                let stdout_bytes = stdout_handle.await.unwrap_or_default();
-                let stderr_bytes = stderr_handle.await.unwrap_or_default();
-                let status = tokio::task::spawn_blocking(move || child.wait())
-                    .await
-                    .map_err(|e| err(e.to_string()))?
-                    .map_err(|e| err(e.to_string()))?;
-                Ok::<_, McpError>((stdout_bytes, stderr_bytes, status))
-            },
-        )
+        let result = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+            let stdout_bytes = stdout_handle.await.unwrap_or_default();
+            let stderr_bytes = stderr_handle.await.unwrap_or_default();
+            let status = tokio::task::spawn_blocking(move || child.wait())
+                .await
+                .map_err(|e| err(e.to_string()))?
+                .map_err(|e| err(e.to_string()))?;
+            Ok::<_, McpError>((stdout_bytes, stderr_bytes, status))
+        })
         .await;
 
         match result {
@@ -290,23 +291,20 @@ impl Runner {
                     output.push_str("[stderr]\n");
                     output.push_str(&stderr_clean);
                 }
-                output.push_str(&format!(
-                    "\n[exit code: {}]\n",
-                    exit_code.unwrap_or(-1)
-                ));
+                output.push_str(&format!("\n[exit code: {}]\n", exit_code.unwrap_or(-1)));
                 text_result(output)
             }
             Ok(Err(e)) => Err(e),
-            Err(_) => {
-                text_result(format!(
-                    "(command timed out after {}s, process killed)\n",
-                    timeout_secs
-                ))
-            }
+            Err(_) => text_result(format!(
+                "(command timed out after {}s, process killed)\n",
+                timeout_secs
+            )),
         }
     }
 
-    #[tool(description = "Stop a running command by session_id. Sends SIGKILL to the process. Use send_signal with SIGINT for a graceful interrupt instead.")]
+    #[tool(
+        description = "Stop a running command by session_id. Sends SIGKILL to the process. Use send_signal with SIGINT for a graceful interrupt instead."
+    )]
     async fn stop_command(
         &self,
         Parameters(args): Parameters<SessionIdArgs>,
@@ -414,7 +412,9 @@ impl Runner {
             }
         };
 
-        let has_wait = args.wait.unwrap_or(false) || args.await_response_ms.is_some() || args.wait_for.is_some();
+        let has_wait = args.wait.unwrap_or(false)
+            || args.await_response_ms.is_some()
+            || args.wait_for.is_some();
 
         let pty_writer = {
             let mut sessions = self.sessions.lock().await;
@@ -445,7 +445,6 @@ impl Runner {
         }
 
         if has_wait {
-
             let idle_ms = args.await_response_ms.unwrap_or(1000);
             let idle_timeout = std::time::Duration::from_millis(idle_ms);
             let poll_interval = std::time::Duration::from_millis(50);
@@ -464,7 +463,8 @@ impl Runner {
                     let s = sessions
                         .get_mut(&args.session_id)
                         .ok_or_else(|| err("Session not found"))?;
-                    let (data, new_pos) = read_from_position(&s.stdout_path, s.stdout_pos).map_err(err)?;
+                    let (data, new_pos) =
+                        read_from_position(&s.stdout_path, s.stdout_pos).map_err(err)?;
                     s.stdout_pos = new_pos;
                     let exited = reap_session(s);
                     (data, exited)
@@ -544,7 +544,9 @@ impl Runner {
         text_result("Input sent")
     }
 
-    #[tool(description = "Send a Unix signal to a running command. Most common: SIGINT (like Ctrl-C, interrupts the program), SIGTERM (request graceful termination), SIGKILL (force kill). Use this to interrupt a running program like gdb or a REPL without killing the session.")]
+    #[tool(
+        description = "Send a Unix signal to a running command. Most common: SIGINT (like Ctrl-C, interrupts the program), SIGTERM (request graceful termination), SIGKILL (force kill). Use this to interrupt a running program like gdb or a REPL without killing the session."
+    )]
     async fn send_signal(
         &self,
         Parameters(args): Parameters<SendSignalArgs>,
@@ -611,7 +613,9 @@ impl Runner {
         }
     }
 
-    #[tool(description = "Read new stdout data since last read. Each call returns only new output (tracked per session).\n\nANSI escape codes are stripped by default (set strip_ansi: false to keep them).\n\nWAITING FOR OUTPUT: Use timeout_ms to wait for output instead of polling. Use wait_for to wait until a specific pattern appears (e.g., \"BUILD SUCCESS\", \"error\", \"listening on\").\n\nNOTE: If use_pty: true was set, output may contain cursor positioning codes that make it look messy when stripped. For clean output from simple commands, use use_pty: false.")]
+    #[tool(
+        description = "Read new stdout data since last read. Each call returns only new output (tracked per session).\n\nANSI escape codes are stripped by default (set strip_ansi: false to keep them).\n\nWAITING FOR OUTPUT: Use timeout_ms to wait for output instead of polling. Use wait_for to wait until a specific pattern appears (e.g., \"BUILD SUCCESS\", \"error\", \"listening on\").\n\nNOTE: If use_pty: true was set, output may contain cursor positioning codes that make it look messy when stripped. For clean output from simple commands, use use_pty: false."
+    )]
     async fn read_output(
         &self,
         Parameters(args): Parameters<ReadOutputArgs>,
@@ -619,9 +623,7 @@ impl Runner {
         let has_wait = args.timeout_ms.is_some() || args.wait_for.is_some();
 
         if has_wait {
-            let max_wait = std::time::Duration::from_millis(
-                args.timeout_ms.unwrap_or(30_000),
-            );
+            let max_wait = std::time::Duration::from_millis(args.timeout_ms.unwrap_or(30_000));
             let idle_timeout = std::time::Duration::from_millis(300);
             let poll_interval = std::time::Duration::from_millis(50);
             let deadline = tokio::time::Instant::now() + max_wait;
@@ -636,7 +638,8 @@ impl Runner {
                     let s = sessions
                         .get_mut(&args.session_id)
                         .ok_or_else(|| err("Session not found"))?;
-                    let (data, new_pos) = read_from_position(&s.stdout_path, s.stdout_pos).map_err(err)?;
+                    let (data, new_pos) =
+                        read_from_position(&s.stdout_path, s.stdout_pos).map_err(err)?;
                     s.stdout_pos = new_pos;
                     let exited = reap_session(s);
                     (data, new_pos, exited)
@@ -644,7 +647,11 @@ impl Runner {
 
                 if !data.is_empty() {
                     let data = normalize_pty_output(&data);
-                    let data = if args.strip_ansi { strip_ansi(&data) } else { data };
+                    let data = if args.strip_ansi {
+                        strip_ansi(&data)
+                    } else {
+                        data
+                    };
                     collected.push_str(&data);
                     idle_since = tokio::time::Instant::now();
                 }
@@ -674,7 +681,10 @@ impl Runner {
                 }
 
                 // For idle-based return (no wait_for pattern): return when idle long enough
-                if args.wait_for.is_none() && !collected.is_empty() && idle_since.elapsed() >= idle_timeout {
+                if args.wait_for.is_none()
+                    && !collected.is_empty()
+                    && idle_since.elapsed() >= idle_timeout
+                {
                     return text_result(collected);
                 }
             }
@@ -712,7 +722,9 @@ impl Runner {
         text_result(result)
     }
 
-    #[tool(description = "Read new stderr data since last read (only if split_stderr: true was set when starting). Each call returns only new output. ANSI escape codes are stripped by default (set strip_ansi: false to keep them).")]
+    #[tool(
+        description = "Read new stderr data since last read (only if split_stderr: true was set when starting). Each call returns only new output. ANSI escape codes are stripped by default (set strip_ansi: false to keep them)."
+    )]
     async fn read_stderr(
         &self,
         Parameters(args): Parameters<ReadOutputArgs>,
@@ -752,7 +764,9 @@ impl Runner {
         text_result(result)
     }
 
-    #[tool(description = "Get status of a command session. Returns whether the process is still running and its exit code (if finished). Use this to check if a long-running command has completed.")]
+    #[tool(
+        description = "Get status of a command session. Returns whether the process is still running and its exit code (if finished). Use this to check if a long-running command has completed."
+    )]
     async fn get_status(
         &self,
         Parameters(args): Parameters<SessionIdArgs>,
@@ -769,7 +783,9 @@ impl Runner {
         ))
     }
 
-    #[tool(description = "List all sessions with their IDs, labels, commands, and status. Use this to discover active sessions or find a session by label.")]
+    #[tool(
+        description = "List all sessions with their IDs, labels, commands, and status. Use this to discover active sessions or find a session by label."
+    )]
     async fn list_sessions(&self) -> Result<CallToolResult, McpError> {
         let mut sessions = self.sessions.lock().await;
         if sessions.is_empty() {
@@ -792,12 +808,17 @@ impl Runner {
                 .as_deref()
                 .map(|l| format!(" [{}]", l))
                 .unwrap_or_default();
-            lines.push(format!("  {}{}: {} ({}) — {}/session/{}", id, label_str, session.command, status, base, id));
+            lines.push(format!(
+                "  {}{}: {} ({}) — {}/session/{}",
+                id, label_str, session.command, status, base, id
+            ));
         }
         text_result(format!("Sessions:\n{}", lines.join("\n")))
     }
 
-    #[tool(description = "Search session output for a pattern. Returns matching lines with line numbers. Searches the full output history (not just unread). Use this to find errors, specific log messages, or confirm expected output without reading the entire buffer.")]
+    #[tool(
+        description = "Search session output for a pattern. Returns matching lines with line numbers. Searches the full output history (not just unread). Use this to find errors, specific log messages, or confirm expected output without reading the entire buffer."
+    )]
     async fn search_output(
         &self,
         Parameters(args): Parameters<crate::SearchOutputArgs>,

@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
-    response::{Html, IntoResponse, Response, sse::Sse},
+    response::{sse::Sse, Html, IntoResponse, Response},
     routing::get,
     Form, Router,
 };
@@ -16,16 +16,18 @@ use std::time::Duration;
 use crate::util::{ansi_to_html, normalize_pty_output, reap_session, remove_session, strip_ansi};
 use crate::{ProcessHandle, Sessions};
 
-pub async fn serve(
-    sessions: Sessions,
-    port: u16,
-    port_out: Arc<std::sync::atomic::AtomicU16>,
-) {
+pub async fn serve(sessions: Sessions, port: u16, port_out: Arc<std::sync::atomic::AtomicU16>) {
     let app = Router::new()
         .route("/", get(http_index))
-        .route("/session/{id}", get(http_session).delete(http_delete_session))
+        .route(
+            "/session/{id}",
+            get(http_session).delete(http_delete_session),
+        )
         .route("/session/{id}/stream", get(http_stream))
-        .route("/session/{id}/input", get(http_input_form).post(http_input_submit))
+        .route(
+            "/session/{id}/input",
+            get(http_input_form).post(http_input_submit),
+        )
         .with_state(sessions);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -38,7 +40,8 @@ pub async fn serve(
 
 async fn http_index(State(sessions): State<Sessions>) -> Html<String> {
     let mut sessions = sessions.lock().await;
-    let mut html = String::from(r#"<!DOCTYPE html><html><head><title>MCP Runner</title>
+    let mut html = String::from(
+        r#"<!DOCTYPE html><html><head><title>MCP Runner</title>
 <style>
 body { font-family: -apple-system, sans-serif; margin: 20px; background: #1a1a1a; color: #ddd; }
 a { color: #6af; }
@@ -51,12 +54,15 @@ th { color: #999; font-size: 0.85em; text-transform: uppercase; }
 button { background: #433; color: #e88; border: 1px solid #644; padding: 4px 10px; border-radius: 3px; cursor: pointer; }
 button:hover { background: #544; }
 </style></head><body>
-<h1>MCP Runner</h1>"#);
+<h1>MCP Runner</h1>"#,
+    );
 
     if sessions.is_empty() {
         html.push_str("<p>No active sessions</p>");
     } else {
-        html.push_str("<table><tr><th>ID</th><th>Label</th><th>Command</th><th>Status</th><th></th></tr>");
+        html.push_str(
+            "<table><tr><th>ID</th><th>Label</th><th>Command</th><th>Status</th><th></th></tr>",
+        );
         for (id, session) in sessions.iter_mut() {
             reap_session(session);
             let running = session.process.is_some();
@@ -87,10 +93,7 @@ button:hover { background: #544; }
     Html(html)
 }
 
-async fn http_session(
-    State(sessions): State<Sessions>,
-    Path(id): Path<String>,
-) -> Response {
+async fn http_session(State(sessions): State<Sessions>, Path(id): Path<String>) -> Response {
     let sessions = sessions.lock().await;
     let Some(session) = sessions.get(&id) else {
         return Html("Session not found".to_string()).into_response();
@@ -214,7 +217,13 @@ async fn http_stream(
     } else {
         "html"
     };
-    let stream = create_log_stream(sessions, id, stdout_path, initial_lines_seen, mode.to_string());
+    let stream = create_log_stream(
+        sessions,
+        id,
+        stdout_path,
+        initial_lines_seen,
+        mode.to_string(),
+    );
     Sse::new(stream).into_response()
 }
 
@@ -260,7 +269,11 @@ async fn http_input_submit(
             Some(ProcessHandle::Pipe(ref mut child)) => {
                 if let Some(ref mut stdin) = child.stdin {
                     if stdin.write_all(input.as_bytes()).is_err() || stdin.flush().is_err() {
-                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Write failed").into_response();
+                        return (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "Write failed",
+                        )
+                            .into_response();
                     }
                 }
                 None
@@ -274,7 +287,11 @@ async fn http_input_submit(
         use tokio::io::AsyncWriteExt;
         let mut w = writer.lock().await;
         if w.write_all(input.as_bytes()).await.is_err() || w.flush().await.is_err() {
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "PTY write failed").into_response();
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "PTY write failed",
+            )
+                .into_response();
         }
     }
 

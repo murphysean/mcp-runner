@@ -4,7 +4,6 @@ use rmcp::{
     service::{NotificationContext, RequestContext},
     tool_handler, ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt,
 };
-use serde_json;
 use std::collections::HashMap;
 use std::future::Future;
 use std::process::Child;
@@ -335,7 +334,10 @@ impl ServerHandler for Runner {
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "mcp-runner", about = "MCP server for running and managing long-lived processes")]
+#[command(
+    name = "mcp-runner",
+    about = "MCP server for running and managing long-lived processes"
+)]
 struct Cli {
     /// Transport mode: "stdio" (default) or "http" (streamable HTTP on --port)
     #[arg(long, default_value = "stdio")]
@@ -370,8 +372,8 @@ async fn main() {
         }
         "http" => {
             use rmcp::transport::streamable_http_server::{
-                StreamableHttpServerConfig, StreamableHttpService,
-                session::local::LocalSessionManager,
+                session::local::LocalSessionManager, StreamableHttpServerConfig,
+                StreamableHttpService,
             };
             use tokio_util::sync::CancellationToken;
 
@@ -385,7 +387,10 @@ async fn main() {
 
             let mcp_port = cli.port + 1;
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], mcp_port));
-            eprintln!("MCP streamable HTTP transport on http://0.0.0.0:{}/mcp", mcp_port);
+            eprintln!(
+                "MCP streamable HTTP transport on http://0.0.0.0:{}/mcp",
+                mcp_port
+            );
             let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             axum::serve(listener, router)
                 .with_graceful_shutdown(async move { ct.cancelled().await })

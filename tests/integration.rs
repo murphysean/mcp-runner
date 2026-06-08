@@ -111,7 +111,11 @@ fn test_full_workflow() {
     // --- List sessions shows the completed greeter ---
     let list = c.tool_text("list_sessions", json!({}));
     assert!(list.contains("[greeter]"), "list_sessions: {}", list);
-    assert!(list.contains("echo hello world"), "list_sessions cmd: {}", list);
+    assert!(
+        list.contains("echo hello world"),
+        "list_sessions cmd: {}",
+        list
+    );
 
     // --- Working directory and environment variables ---
     c.tool_text(
@@ -140,7 +144,11 @@ fn test_full_workflow() {
         json!({"session_id": "3", "wait_for": "stdout_line", "timeout_ms": 5000}),
     );
     assert!(stdout.contains("stdout_line"), "stdout: {}", stdout);
-    assert!(!stdout.contains("stderr_line"), "stderr leaked to stdout: {}", stdout);
+    assert!(
+        !stdout.contains("stderr_line"),
+        "stderr leaked to stdout: {}",
+        stdout
+    );
 
     std::thread::sleep(Duration::from_millis(200));
     let stderr = c.tool_text("read_stderr", json!({"session_id": "3"}));
@@ -161,7 +169,11 @@ fn test_full_workflow() {
     );
     assert!(search.contains("2 match"), "search count: {}", search);
     assert!(search.contains("ERROR fail"), "search content: {}", search);
-    assert!(search.contains("ERROR again"), "search content2: {}", search);
+    assert!(
+        search.contains("ERROR again"),
+        "search content2: {}",
+        search
+    );
 
     // --- Send input with await_response ---
     c.tool_text(
@@ -173,7 +185,11 @@ fn test_full_workflow() {
         "send_input",
         json!({"session_id": "5", "input": "ping", "await_response_ms": 2000}),
     );
-    assert!(response.contains("ping"), "send_input response: {}", response);
+    assert!(
+        response.contains("ping"),
+        "send_input response: {}",
+        response
+    );
 
     // --- Send signal (SIGTERM) ---
     c.tool_text(
@@ -185,16 +201,21 @@ fn test_full_workflow() {
         "send_signal",
         json!({"session_id": "6", "signal": "SIGTERM"}),
     );
-    assert!(sig_result.contains("SIGTERM sent"), "signal: {}", sig_result);
+    assert!(
+        sig_result.contains("SIGTERM sent"),
+        "signal: {}",
+        sig_result
+    );
     std::thread::sleep(Duration::from_millis(100));
     let status = c.tool_text("get_status", json!({"session_id": "6"}));
-    assert!(status.contains("Running: false"), "after signal: {}", status);
+    assert!(
+        status.contains("Running: false"),
+        "after signal: {}",
+        status
+    );
 
     // --- Stop command ---
-    c.tool_text(
-        "start_command",
-        json!({"command": "sleep", "args": ["60"]}),
-    );
+    c.tool_text("start_command", json!({"command": "sleep", "args": ["60"]}));
     std::thread::sleep(Duration::from_millis(100));
     let stop = c.tool_text("stop_command", json!({"session_id": "7"}));
     assert!(stop.contains("stopped"), "stop: {}", stop);
@@ -214,7 +235,11 @@ fn test_full_workflow() {
         "read_output",
         json!({"session_id": "8", "wait_for": "BUILD_DONE", "timeout_ms": 10000}),
     );
-    assert!(wait_output.contains("BUILD_DONE"), "wait_for: {}", wait_output);
+    assert!(
+        wait_output.contains("BUILD_DONE"),
+        "wait_for: {}",
+        wait_output
+    );
 
     // --- Timeout seconds (auto-kill) ---
     c.tool_text(
@@ -223,17 +248,37 @@ fn test_full_workflow() {
     );
     std::thread::sleep(Duration::from_secs(3));
     let status = c.tool_text("get_status", json!({"session_id": "9"}));
-    assert!(status.contains("Running: false"), "timeout kill: {}", status);
+    assert!(
+        status.contains("Running: false"),
+        "timeout kill: {}",
+        status
+    );
 
     // --- run_command (synchronous) ---
     let run_output = c.tool_text(
         "run_command",
         json!({"command": "sh", "args": ["-c", "echo built ok; echo warn >&2"], "working_dir": "/tmp"}),
     );
-    assert!(run_output.contains("built ok"), "run_command stdout: {}", run_output);
-    assert!(run_output.contains("[stderr]"), "run_command stderr label: {}", run_output);
-    assert!(run_output.contains("warn"), "run_command stderr content: {}", run_output);
-    assert!(run_output.contains("[exit code: 0]"), "run_command exit: {}", run_output);
+    assert!(
+        run_output.contains("built ok"),
+        "run_command stdout: {}",
+        run_output
+    );
+    assert!(
+        run_output.contains("[stderr]"),
+        "run_command stderr label: {}",
+        run_output
+    );
+    assert!(
+        run_output.contains("warn"),
+        "run_command stderr content: {}",
+        run_output
+    );
+    assert!(
+        run_output.contains("[exit code: 0]"),
+        "run_command exit: {}",
+        run_output
+    );
 
     // --- send_input with wait:true (simplified API) ---
     c.tool_text(
@@ -245,11 +290,18 @@ fn test_full_workflow() {
         "send_input",
         json!({"session_id": "10", "input": "test_wait_true", "wait": true}),
     );
-    assert!(wait_resp.contains("test_wait_true"), "wait:true response: {}", wait_resp);
+    assert!(
+        wait_resp.contains("test_wait_true"),
+        "wait:true response: {}",
+        wait_resp
+    );
 
     // --- Final session count ---
     let list = c.tool_text("list_sessions", json!({}));
     assert!(list.contains("Sessions:"), "final list: {}", list);
     // Session 7 was deleted, so it shouldn't appear
-    assert!(!list.contains("session_id: 7"), "deleted session still in list");
+    assert!(
+        !list.contains("session_id: 7"),
+        "deleted session still in list"
+    );
 }

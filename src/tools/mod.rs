@@ -379,16 +379,23 @@ impl Runner {
         let no_enter = args.no_enter.unwrap_or(false);
         let line_ending: &[u8] = if is_pty { b"\r\n" } else { b"\n" };
 
-        let data = if args.elicit.unwrap_or(false) {
+        let (data, deferred_ending) = if args.elicit.unwrap_or(false) {
             let msg = args
                 .elicit_message
                 .as_deref()
                 .unwrap_or("Enter input for process");
             match peer.elicit::<ElicitedInput>(msg).await {
                 Ok(Some(elicited)) => {
-                    let mut bytes = elicited.input.trim_end().as_bytes().to_vec();
-                    bytes.extend_from_slice(line_ending);
-                    bytes
+                    let bytes = elicited.input.trim_end().as_bytes().to_vec();
+                    if is_pty && !no_enter {
+                        (bytes, true)
+                    } else {
+                        let mut bytes = bytes;
+                        if !no_enter {
+                            bytes.extend_from_slice(line_ending);
+                        }
+                        (bytes, false)
+                    }
                 }
                 Ok(None) => return Err(err("User provided no input")),
                 Err(ElicitationError::UserDeclined) => return text_result("User declined input"),
@@ -401,13 +408,21 @@ impl Runner {
         } else {
             match (args.input, args.bytes) {
                 (Some(text), _) => {
-                    let mut bytes = text.trim_end().as_bytes().to_vec();
-                    if !no_enter {
-                        bytes.extend_from_slice(line_ending);
+                    let bytes = text.trim_end().as_bytes().to_vec();
+                    if is_pty && !no_enter {
+                        // For PTY: send text separately, then line ending after a
+                        // brief delay. This lets programs like rustyline process the
+                        // text before seeing Enter.
+                        (bytes, true)
+                    } else {
+                        let mut bytes = bytes;
+                        if !no_enter {
+                            bytes.extend_from_slice(line_ending);
+                        }
+                        (bytes, false)
                     }
-                    bytes
                 }
-                (None, Some(bytes)) => bytes,
+                (None, Some(bytes)) => (bytes, false),
                 (None, None) => return Err(err("Provide 'input', 'bytes', or set 'elicit: true'")),
             }
         };
@@ -442,6 +457,11 @@ impl Runner {
             let mut w = writer.lock().await;
             w.write_all(&data).await.map_err(|e| err(e.to_string()))?;
             w.flush().await.map_err(|e| err(e.to_string()))?;
+            if deferred_ending {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                w.write_all(b"\r\n").await.map_err(|e| err(e.to_string()))?;
+                w.flush().await.map_err(|e| err(e.to_string()))?;
+            }
         }
 
         if has_wait {
@@ -501,17 +521,13 @@ impl Runner {
                 }
 
                 // Idle timeout: return when output stops arriving
-                if data.is_empty() && idle_since.elapsed() >= idle_timeout {
-                    // For wait_for: if nothing has arrived at all for 5s, give up
-                    // If some output arrived but pattern not found, idle means "done"
-                    if args.wait_for.is_some() {
-                        let no_output_cap = std::time::Duration::from_secs(5);
-                        if idle_since.elapsed() >= no_output_cap {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
+                // For wait_for: rely on the 30s wall cap — don't bail early on idle,
+                // since programs like LLMs can have long processing delays before output.
+                if data.is_empty()
+                    && idle_since.elapsed() >= idle_timeout
+                    && args.wait_for.is_none()
+                {
+                    break;
                 }
 
                 if let Some(ref token) = progress_token {

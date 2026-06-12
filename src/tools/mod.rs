@@ -462,6 +462,55 @@ impl Runner {
                 w.write_all(b"\r\n").await.map_err(|e| err(e.to_string()))?;
                 w.flush().await.map_err(|e| err(e.to_string()))?;
             }
+            drop(w);
+
+            // Advance cursor past the echoed input so subsequent reads/waits
+            // only see command output, not the echo of what we just typed.
+            if deferred_ending {
+                let input_text = String::from_utf8_lossy(&data);
+                // Count newlines in our input to know how many echo lines to skip
+                let input_lines = input_text.chars().filter(|&c| c == '\n').count() + 1;
+                let poll_interval = std::time::Duration::from_millis(20);
+                let max_wait = std::time::Duration::from_millis(500);
+                let start = tokio::time::Instant::now();
+
+                loop {
+                    tokio::time::sleep(poll_interval).await;
+                    let mut sessions = self.sessions.lock().await;
+                    let s = sessions
+                        .get_mut(&args.session_id)
+                        .ok_or_else(|| err("Session not found"))?;
+                    let (echo_data, _new_pos) =
+                        read_from_position(&s.stdout_path, s.stdout_pos).map_err(err)?;
+                    if !echo_data.is_empty() {
+                        // Find the position after the Nth newline (matching input line count)
+                        let newline_count = echo_data.chars().filter(|&c| c == '\n').count();
+                        if newline_count >= input_lines {
+                            // Advance cursor to just after the Nth newline
+                            let mut byte_pos = 0;
+                            let mut found = 0;
+                            for (i, b) in echo_data.bytes().enumerate() {
+                                if b == b'\n' {
+                                    found += 1;
+                                    if found == input_lines {
+                                        byte_pos = i + 1;
+                                        break;
+                                    }
+                                }
+                            }
+                            s.stdout_pos += byte_pos as u64;
+                            break;
+                        }
+                    }
+                    if start.elapsed() >= max_wait {
+                        // Timeout: advance past whatever we got
+                        let (_, new_pos) =
+                            read_from_position(&s.stdout_path, s.stdout_pos).map_err(err)?;
+                        s.stdout_pos = new_pos;
+                        break;
+                    }
+                }
+            }
         }
 
         if has_wait {
@@ -499,8 +548,7 @@ impl Runner {
                 if let Some(ref pattern) = args.wait_for {
                     let check = strip_ansi(&normalize_pty_output(&collected));
                     if check.contains(pattern.as_str()) {
-                        let result = strip_ansi(&normalize_pty_output(&collected));
-                        return text_result(result);
+                        return text_result(check);
                     }
                 }
 
@@ -662,38 +710,51 @@ impl Runner {
                 };
 
                 if !data.is_empty() {
-                    let data = normalize_pty_output(&data);
-                    let data = if args.strip_ansi {
-                        strip_ansi(&data)
-                    } else {
-                        data
-                    };
                     collected.push_str(&data);
                     idle_since = tokio::time::Instant::now();
                 }
 
+                // Pattern matching on normalized buffer
                 if let Some(ref pattern) = args.wait_for {
-                    if collected.contains(pattern.as_str()) {
+                    let check = normalize_pty_output(&collected);
+                    if check.contains(pattern.as_str()) {
+                        let mut result = if args.strip_ansi {
+                            strip_ansi(&check)
+                        } else {
+                            check
+                        };
                         if let Some(msg) = exited {
-                            collected.push_str(&format!("\n{msg}\n"));
+                            result.push_str(&format!("\n{msg}\n"));
                         }
-                        return text_result(collected);
+                        return text_result(result);
                     }
                 }
 
                 if exited.is_some() {
+                    let normalized = normalize_pty_output(&collected);
+                    let mut result = if args.strip_ansi {
+                        strip_ansi(&normalized)
+                    } else {
+                        normalized
+                    };
                     if let Some(msg) = exited {
-                        collected.push_str(&format!("\n{msg}\n"));
+                        result.push_str(&format!("\n{msg}\n"));
                     }
-                    return text_result(collected);
+                    return text_result(result);
                 }
 
                 if tokio::time::Instant::now() >= deadline {
                     if collected.is_empty() {
                         return text_result("(timeout, no output)");
                     }
-                    collected.push_str("\n(timeout)\n");
-                    return text_result(collected);
+                    let normalized = normalize_pty_output(&collected);
+                    let mut result = if args.strip_ansi {
+                        strip_ansi(&normalized)
+                    } else {
+                        normalized
+                    };
+                    result.push_str("\n(timeout)\n");
+                    return text_result(result);
                 }
 
                 // For idle-based return (no wait_for pattern): return when idle long enough
@@ -701,7 +762,13 @@ impl Runner {
                     && !collected.is_empty()
                     && idle_since.elapsed() >= idle_timeout
                 {
-                    return text_result(collected);
+                    let normalized = normalize_pty_output(&collected);
+                    let result = if args.strip_ansi {
+                        strip_ansi(&normalized)
+                    } else {
+                        normalized
+                    };
+                    return text_result(result);
                 }
             }
         }
